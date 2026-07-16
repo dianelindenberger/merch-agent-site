@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --background: #f7f9fc;
+  --foreground: #101828;
+  --muted: #667085;
+  --card: rgba(255, 255, 255, 0.82);
+  --card-strong: #ffffff;
+  --line: rgba(16, 24, 40, 0.1);
+  --brand: #2563eb;
+  --brand-soft: #dbeafe;
+  --nav: rgba(255, 255, 255, 0.78);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #070b12;
+  --foreground: #eef4ff;
+  --muted: #9aa7bb;
+  --card: rgba(17, 24, 39, 0.76);
+  --card-strong: #101827;
+  --line: rgba(255, 255, 255, 0.12);
+  --brand: #60a5fa;
+  --brand-soft: rgba(37, 99, 235, 0.18);
+  --nav: rgba(8, 13, 23, 0.82);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(37, 99, 235, 0.14), transparent 34rem),
+    radial-gradient(circle at 88% 12%, rgba(14, 165, 233, 0.12), transparent 28rem),
+    var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+::selection {
+  background: rgba(37, 99, 235, 0.22);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-card: var(--card);
+  --color-card-strong: var(--card-strong);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --font-sans: var(--font-inter);
+}
+
+@layer utilities {
+  .container-page {
+    width: min(1120px, calc(100% - 32px));
+    margin-inline: auto;
+  }
+
+  .glass-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(18px);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .animate-float {
+    animation: float 7s ease-in-out infinite;
+  }
+
+  .animate-rise {
+    animation: rise 650ms ease both;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}
