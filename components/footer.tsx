@@ -29,7 +29,7 @@ export function Footer() {
         </div>
       </div>
       <div className="container-page border-t border-line py-5 text-sm text-muted">
-        Copyright {year} Crazy Good Designs LLC. All rights reserved.
+        © {year} Crazy Good Designs LLC • All Rights Reserved
       </div>
     </footer>
   );

@@ -50,11 +50,15 @@ export default function Home() {
             Crazy Good Designs LLC private internal platform
           </div>
           <h1 className="max-w-4xl text-balance text-5xl font-semibold tracking-tight text-foreground sm:text-6xl lg:text-7xl">
-            Smarter Advertising for Amazon Merch on Demand
+            Private Advertising Analytics for Amazon Merch on Demand
           </h1>
           <p className="mt-7 max-w-2xl text-lg leading-8 text-muted sm:text-xl">
             Merch Agent automatically combines Amazon Ads performance with Merch on Demand sales data to provide dashboards,
             analytics, and AI-powered insights that help optimize advertising decisions.
+          </p>
+          <p className="mt-4 max-w-2xl text-base leading-7 text-muted">
+            Merch Agent is proprietary software developed and used internally by Crazy Good Designs LLC to manage Amazon
+            advertising operations.
           </p>
           <div className="mt-10 flex flex-col gap-3 sm:flex-row">
             <Link
@@ -129,11 +133,16 @@ export default function Home() {
       <section id="about" className="container-page py-20">
         <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
           <div>
-            <p className="text-sm font-semibold uppercase text-brand">About</p>
+            <p className="text-sm font-semibold uppercase text-brand">About Crazy Good Designs LLC</p>
             <h2 className="mt-3 text-balance text-4xl font-semibold tracking-tight">Internal software for responsible advertising operations.</h2>
+            <p className="mt-5 text-base font-semibold text-muted">Raleigh, North Carolina, USA</p>
           </div>
           <div className="glass-card rounded-3xl p-7 text-lg leading-8 text-muted">
             <p>
+              Crazy Good Designs LLC is an independent design studio and Amazon Merch on Demand publisher. We develop
+              proprietary software to automate advertising analytics, reporting, and business operations for our own brands.
+            </p>
+            <p className="mt-5">
               Crazy Good Designs LLC develops internal software that helps manage Amazon Merch on Demand advertising. Merch
               Agent is currently a private internal analytics platform used to automate reporting and improve advertising
               decisions.
