@@ -606,7 +606,7 @@ svg {
   text-align: center;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 520px), (hover: none) and (pointer: coarse) {
   .ads-performance { padding: 14px 12px; }
   .performance-legend { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .custom-range { grid-template-columns: 1fr 1fr; }
@@ -1536,7 +1536,7 @@ svg {
   }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 520px), (hover: none) and (pointer: coarse) {
   .app-shell {
     padding: 0;
     height: 100vh;
