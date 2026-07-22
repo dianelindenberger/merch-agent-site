@@ -34,6 +34,7 @@ AUTH_PASSWORD = os.getenv("MERCH_AGENT_PASSWORD", "")
 MAX_SALES_UPLOAD_BYTES = 20 * 1024 * 1024
 DAILY_REFRESH_ENABLED = os.getenv("MERCH_AGENT_DAILY_REFRESH_ENABLED", "false").lower() in {"1", "true", "yes"}
 DAILY_REFRESH_TIME = os.getenv("MERCH_AGENT_DAILY_REFRESH_TIME", "06:00")
+AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "12:00,17:00")
 EASTERN_TIME = ZoneInfo("America/New_York")
 
 MARKET_NAMES = {
@@ -213,14 +214,49 @@ def sync_uploaded_sales_report(file_name, encoded_data):
         temporary.unlink(missing_ok=True)
 
 
-def next_daily_refresh(now=None):
-    now = now or datetime.now(EASTERN_TIME)
+def parse_refresh_time(value, fallback):
     try:
-        hour, minute = (int(value) for value in DAILY_REFRESH_TIME.split(":", 1))
+        hour, minute = (int(part) for part in str(value).split(":", 1))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError
     except ValueError:
-        hour, minute = 6, 0
+        hour, minute = fallback
+    return hour, minute
+
+
+def ad_refresh_times():
+    times = []
+    for raw_time in AD_REFRESH_TIMES.split(","):
+        raw_time = raw_time.strip()
+        if raw_time:
+            times.append(parse_refresh_time(raw_time, (12, 0)))
+    return times or [(12, 0), (17, 0)]
+
+
+def scheduled_refresh_jobs(now=None):
+    now = now or datetime.now(EASTERN_TIME)
+    jobs = []
+    full_hour, full_minute = parse_refresh_time(DAILY_REFRESH_TIME, (6, 0))
+    jobs.append({
+        "label": "full data refresh",
+        "script": "refresh_merch_agent.py",
+        "scheduled": now.replace(hour=full_hour, minute=full_minute, second=0, microsecond=0),
+    })
+    for hour, minute in ad_refresh_times():
+        jobs.append({
+            "label": "Amazon Ads checkpoint refresh",
+            "script": "refresh_amazon_ads.py",
+            "scheduled": now.replace(hour=hour, minute=minute, second=0, microsecond=0),
+        })
+    for job in jobs:
+        if job["scheduled"] <= now:
+            job["scheduled"] += timedelta(days=1)
+    return sorted(jobs, key=lambda job: job["scheduled"])
+
+
+def next_daily_refresh(now=None):
+    now = now or datetime.now(EASTERN_TIME)
+    hour, minute = parse_refresh_time(DAILY_REFRESH_TIME, (6, 0))
     scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if scheduled <= now:
         scheduled += timedelta(days=1)
@@ -229,21 +265,22 @@ def next_daily_refresh(now=None):
 
 def daily_refresh_scheduler():
     while True:
-        scheduled = next_daily_refresh()
+        job = scheduled_refresh_jobs()[0]
+        scheduled = job["scheduled"]
         delay = max(1, (scheduled - datetime.now(EASTERN_TIME)).total_seconds())
-        print(f"Next hosted data refresh: {scheduled.isoformat()}", flush=True)
+        print(f"Next hosted {job['label']}: {scheduled.isoformat()}", flush=True)
         threading.Event().wait(delay)
         try:
             result = subprocess.run(
-                [sys.executable, str(PROJECT_ROOT / "tools" / "refresh_merch_agent.py")],
+                [sys.executable, str(PROJECT_ROOT / "tools" / job["script"])],
                 cwd=PROJECT_ROOT,
                 text=True,
                 timeout=3600,
                 check=False,
             )
-            print(f"Hosted data refresh finished with exit code {result.returncode}.", flush=True)
+            print(f"Hosted {job['label']} finished with exit code {result.returncode}.", flush=True)
         except Exception as exc:
-            print(f"Hosted data refresh failed: {exc}", file=sys.stderr, flush=True)
+            print(f"Hosted {job['label']} failed: {exc}", file=sys.stderr, flush=True)
 
 
 def money(value):
