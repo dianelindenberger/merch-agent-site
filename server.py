@@ -1509,6 +1509,8 @@ def home_payload(period):
     period_days = {"yesterday": 1, "last7": 7, "last14": 14, "last30": 30}
     period_label = period_labels.get(period, "Latest period")
     days = period_days.get(period, 1)
+    period_end = parse_date(report_date)
+    period_start = period_end - timedelta(days=days - 1) if period_end else None
 
     if top_product:
         summary.append(f"{top_product['title']} led {period_label.lower()} with {top_product['units']} units.")
@@ -1538,6 +1540,8 @@ def home_payload(period):
         "source": "sqlite",
         "period": period,
         "reportDate": report_date,
+        "periodStart": period_start.isoformat() if period_start else "",
+        "periodEnd": period_end.isoformat() if period_end else "",
         "latestImport": latest_import,
         "sales": totals["sales"],
         "royalties": totals["royalties"],

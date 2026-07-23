@@ -9,6 +9,7 @@ const state = {
   homeData: null,
   homeError: "",
   homeLoading: false,
+  homeRequest: 0,
   royaltyTier: null,
   royaltyTierError: "",
   adsData: null,
@@ -238,24 +239,29 @@ function fallbackHomeData() {
 }
 
 async function loadHomeData() {
+  const requestedPeriod = state.homePeriod;
+  const requestId = ++state.homeRequest;
   state.homeLoading = true;
   try {
-    const response = await fetch(`/api/home?period=${encodeURIComponent(state.homePeriod)}`, { cache: "no-store" });
+    const response = await fetch(`/api/home?period=${encodeURIComponent(requestedPeriod)}`, { cache: "no-store" });
 
     if (!response.ok) {
       throw new Error(`API returned ${response.status}`);
     }
 
-    state.homeData = await response.json();
+    const data = await response.json();
+    if (requestId !== state.homeRequest || requestedPeriod !== state.homePeriod) return;
+    state.homeData = data;
     state.homeError = "";
   } catch (error) {
+    if (requestId !== state.homeRequest || requestedPeriod !== state.homePeriod) return;
     state.homeData = fallbackHomeData();
     state.homeError = "Live sales data could not be loaded. Keep the Merch Agent server running and try again.";
   } finally {
+    if (requestId !== state.homeRequest || requestedPeriod !== state.homePeriod) return;
     state.homeLoading = false;
+    render();
   }
-
-  render();
 }
 
 async function loadRoyaltyTier() {
@@ -642,7 +648,9 @@ function renderHome() {
   const homeData = state.homeData || fallbackHomeData();
   const summary = homeData.summary?.length ? homeData.summary : fallbackHomeData().summary;
   const briefing = homeData.businessBriefing;
-  const reportDate = homeData.reportDate || homeData.latestImport || "Latest import";
+  const reportDate = homeData.periodStart && homeData.periodEnd && homeData.periodStart !== homeData.periodEnd
+    ? `${homeData.periodStart} to ${homeData.periodEnd}`
+    : homeData.reportDate || homeData.latestImport || "Latest import";
   const estimatedUsdRoyalties = estimateUsdRoyalties(homeData.markets, homeData.royalties);
   const expectedYesterday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
   const isYesterdayBehind = homeData.period === "yesterday"
