@@ -1306,10 +1306,34 @@ function renderAds() {
   `;
 }
 
+function renderAssistantText(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  let html = '<div class="assistant-answer-text">';
+  let listOpen = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("•")) {
+      if (!listOpen) {
+        html += '<ul class="assistant-answer-list">';
+        listOpen = true;
+      }
+      html += `<li>${escapeHtml(trimmed.slice(1).trim())}</li>`;
+    } else {
+      if (listOpen) {
+        html += "</ul>";
+        listOpen = false;
+      }
+      if (trimmed) html += `<p>${escapeHtml(trimmed)}</p>`;
+    }
+  }
+  if (listOpen) html += "</ul>";
+  return `${html}</div>`;
+}
+
 function renderAssistantMessage(message, index, source) {
   return `
     <div class="bubble ${message.role} ${message.pendingLog ? "has-pending-log" : ""}">
-      <div>${escapeHtml(message.text)}</div>
+      ${renderAssistantText(message.text)}
       ${message.evidence?.length ? `
         <div class="evidence-list">
           <strong>${message.saved && message.pendingLog ? "Log receipt" : "Data used"}</strong>

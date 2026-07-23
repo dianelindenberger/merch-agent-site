@@ -60,6 +60,26 @@ MARKET_NAMES = {
     ".co.jp": "Japan",
 }
 
+MARKET_QUERY_TERMS = {
+    "united states": ".com", "us": ".com", "usa": ".com", "america": ".com",
+    "germany": ".de", "german": ".de", "de": ".de",
+    "united kingdom": ".co.uk", "uk": ".co.uk", "britain": ".co.uk", "gb": ".co.uk",
+    "france": ".fr", "french": ".fr", "fr": ".fr",
+    "italy": ".it", "italian": ".it", "it": ".it",
+    "spain": ".es", "spanish": ".es", "es": ".es",
+    "japan": ".co.jp", "japanese": ".co.jp", "jp": ".co.jp",
+}
+
+
+def market_from_text(text):
+    """Return the last explicit marketplace mentioned in a question."""
+    normalized = str(text or "").lower()
+    matches = []
+    for term, code in MARKET_QUERY_TERMS.items():
+        for match in re.finditer(rf"(?<![a-z]){re.escape(term)}(?![a-z])", normalized):
+            matches.append((match.start(), code))
+    return max(matches, default=(0, ""))[1]
+
 SALES_REPORT_COLUMNS = {"Title", "Purchased", "Royalties", "Revenue", "Date"}
 SALES_REPORT_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 RECOMMENDATION_ACTIONS = {"made_change", "ignore", "remind_later", "discuss"}
@@ -1656,7 +1676,7 @@ def home_payload(period):
     }
 
 
-def designs_payload(period):
+def designs_payload(period, market=None):
     if not DB_PATH.exists():
         return {"source": "missing_database", "period": period, "designs": []}
 
@@ -1698,17 +1718,22 @@ def designs_payload(period):
             ],
         }
 
+    market_filter = ""
+    market_params = [latest_import, period]
+    if market:
+        market_filter = " AND LOWER(COALESCE(market, '')) = ?"
+        market_params.append(market.lower())
     rows = cur.execute(
-        """
+        f"""
         SELECT title, COALESCE(currency, 'USD') AS currency,
                SUM(purchased) AS units, SUM(royalties) AS royalties,
                SUM(revenue) AS revenue, MAX(COALESCE(report_date, '')) AS report_date
         FROM sales_market_breakdown
-        WHERE import_date = ? AND COALESCE(report_period, 'unspecified') = ?
+        WHERE import_date = ? AND COALESCE(report_period, 'unspecified') = ?{market_filter}
         GROUP BY title, COALESCE(currency, 'USD')
-        ORDER BY title ASC, currency ASC
+        ORDER BY SUM(purchased) DESC, SUM(royalties) DESC, title ASC, currency ASC
         """,
-        (latest_import, period),
+        market_params,
     ).fetchall()
     designs_by_title = {}
     report_date = ""
@@ -1731,6 +1756,7 @@ def designs_payload(period):
     return {
         "source": "sqlite",
         "period": period,
+        "market": market or "",
         "latestImport": latest_import,
         "reportDate": report_date,
         "designs": designs,
@@ -2333,11 +2359,18 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
         "last30": "the last 30 days",
         "last60": "the trailing 60 days",
     }[analysis_period]
+    market_filter = market_from_text(question)
+    if not market_filter:
+        for item in reversed(history):
+            market_filter = market_from_text(item.get("text", ""))
+            if market_filter:
+                break
+    market_label = MARKET_NAMES.get(market_filter, "")
     sales_yesterday = home_payload("yesterday")
     sales_last7 = home_payload("last7")
     selected_sales = home_payload(analysis_period)
     campaigns_last7 = campaigns_payload(analysis_period).get("campaigns", [])
-    designs_last7 = designs_payload(analysis_period).get("designs", [])
+    designs_last7 = designs_payload(analysis_period, market_filter).get("designs", [])
     daily_audit = build_daily_audit()
     previous_decisions = recommendation_history_context()
     audit_bid_actions = [
@@ -2561,12 +2594,18 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             evidence.append(f"Merch sales and Amazon campaign names, {period_label}")
         else:
             answer = "Every design in the current sales view has at least one obvious campaign-name match. Review ASIN-level coverage for gaps."
-    elif any(phrase in normalized for phrase in ("heating up", "top design", "best design", "selling")):
+    elif any(phrase in normalized for phrase in ("heating up", "top design", "best design", "selling")) or (
+        "what about" in normalized and any("design" in str(item.get("text", "")).lower() for item in history)
+    ):
         leaders = designs_last7[:5]
-        answer = "The strongest designs in the latest seven-day sales data are: " + "; ".join(
-            f"{item['title']} with {item['units']} units and {design_royalties_text(item)} royalties" for item in leaders
-        ) + "."
-        evidence.append(f"Merch sales, last 7 days ending {sales_last7.get('reportDate') or 'latest report'}")
+        scope = f" in {market_label}" if market_label else ""
+        if leaders:
+            answer = f"Strongest designs{scope} for {period_label}:\n" + "\n".join(
+                f"• {item['title']} — {item['units']} units; {design_royalties_text(item)} royalties" for item in leaders
+            )
+        else:
+            answer = f"I do not have design sales rows for {period_label}{scope}."
+        evidence.append(f"Merch sales{', ' + market_label if market_label else ''}, {period_label} ending {sales_last7.get('reportDate') or 'latest report'}")
     elif any(phrase in normalized for phrase in ("sales down", "sales up", "compare today", "compare yesterday")):
         yesterday_units = int(sales_yesterday.get("sales") or 0)
         seven_units = int(sales_last7.get("sales") or 0)
@@ -2593,7 +2632,7 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             for word in normalized.split()
             if len(word.strip(".,?!:;'\"")) >= 3 and word.strip(".,?!:;'\"") not in stop_words
         }
-        all_designs = designs_payload(analysis_period).get("designs", [])
+        all_designs = designs_payload(analysis_period, market_filter).get("designs", [])
         all_campaigns = campaigns_payload(analysis_period).get("campaigns", [])
 
         def mention_score(name):
