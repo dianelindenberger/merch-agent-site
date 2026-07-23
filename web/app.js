@@ -81,6 +81,32 @@ const pageMeta = {
   more: ["More", "Tools and settings"],
 };
 
+function hasSubscreen() {
+  return state.page === "ads" && Boolean(state.selectedCampaign);
+}
+
+function backLabel() {
+  if (hasSubscreen()) return "Back to all campaigns";
+  if (state.page === "home") return "Home";
+  return "Back to Home";
+}
+
+function goBack() {
+  if (hasSubscreen()) {
+    state.selectedCampaign = "";
+    state.selectedAdGroup = "";
+    state.campaignDetail = null;
+    state.campaignDetailError = "";
+    render();
+    return;
+  }
+
+  if (state.page !== "home") {
+    state.page = "home";
+    render();
+  }
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -902,7 +928,6 @@ function renderCampaignDetail() {
   const changes = data.changes || [];
 
   return `
-    <button type="button" class="back-button" data-campaign-back>&#8249; All campaigns</button>
     <section class="card campaign-detail-header">
       <div class="title">${escapeHtml(campaign.name)}</div>
       <div class="sub">Campaign report ending ${escapeHtml(campaign.reportDate || "latest")}</div>
@@ -1498,6 +1523,14 @@ function render() {
   document.querySelector(".phone").dataset.page = state.page;
   document.querySelector("#page-title").textContent = title;
   document.querySelector("#page-kicker").textContent = kicker;
+  const appBack = document.querySelector("[data-app-back]");
+  if (appBack) {
+    const hidden = state.page === "home";
+    appBack.hidden = hidden;
+    appBack.setAttribute("aria-label", backLabel());
+    appBack.setAttribute("title", backLabel());
+    appBack.onclick = goBack;
+  }
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.page === state.page);
   });
@@ -1590,12 +1623,7 @@ function render() {
 
   const campaignBack = document.querySelector("[data-campaign-back]");
   if (campaignBack) {
-    campaignBack.addEventListener("click", () => {
-      state.selectedCampaign = "";
-      state.selectedAdGroup = "";
-      state.campaignDetail = null;
-      render();
-    });
+    campaignBack.addEventListener("click", goBack);
   }
 
   document.querySelectorAll("[data-ad-group]").forEach((button) => {
