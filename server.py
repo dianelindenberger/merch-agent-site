@@ -19,7 +19,6 @@ from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-APP_ICON_PATH = Path(__file__).resolve().parent / "public" / "merch-agent-logo.png"
 SALES_SYNC_LOCK = threading.Lock()
 HOSTED_REFRESH_LOCK = threading.Lock()
 HOSTED_REFRESH_STATUS = {
@@ -2562,18 +2561,6 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             return
 
         if self.require_authentication():
-            return
-
-        if parsed.path == "/app-icon.png":
-            if not APP_ICON_PATH.exists():
-                self.send_json({"error": "App icon not found"}, 404)
-                return
-            data = APP_ICON_PATH.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "image/png")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
             return
 
         if parsed.path == "/api/sales-sync-status":
