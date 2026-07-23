@@ -2776,10 +2776,27 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
 def ai_search_terms_provider(campaign="", search="", period="last7", limit=20):
     conn = connect()
     cur = conn.cursor()
+    period_order = {"yesterday": 0, "last7": 1, "last14": 2, "last30": 3, "last60": 4}
+    available_periods = sorted(
+        {
+            str(row[0] or "")
+            for row in cur.execute(
+                """SELECT DISTINCT COALESCE(report_period, '')
+                   FROM search_terms
+                   WHERE COALESCE(report_period, '') != ''"""
+            ).fetchall()
+        },
+        key=lambda value: (period_order.get(value, 99), value),
+    )
     latest_import = latest_table_import(cur, "search_terms", period)
     if not latest_import:
         conn.close()
-        return {"period": period, "reportDate": "", "searchTerms": []}
+        return {
+            "period": period,
+            "reportDate": "",
+            "availablePeriods": available_periods,
+            "searchTerms": [],
+        }
     where = [
         "import_date = ?",
         "COALESCE(report_period, 'unspecified') = ?",
@@ -2830,7 +2847,12 @@ def ai_search_terms_provider(campaign="", search="", period="last7", limit=20):
             "sales": sales,
             "roas": round(sales / spend, 2) if spend else 0,
         })
-    return {"period": period, "reportDate": report_date, "searchTerms": items}
+    return {
+        "period": period,
+        "reportDate": report_date,
+        "availablePeriods": available_periods,
+        "searchTerms": items,
+    }
 
 
 def ai_placements_provider(campaign="", period="last7", limit=20):
