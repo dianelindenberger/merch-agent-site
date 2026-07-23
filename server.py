@@ -2526,6 +2526,41 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             evidence.extend([f"Amazon Ads, last 7 days ending {item['reportDate'] or 'latest report'}" for item in review])
         else:
             answer = "No campaign currently meets the app's cautious review rule of at least $10 spend and zero orders in the last seven days."
+    elif any(phrase in normalized for phrase in ("best performing campaign", "top performing campaign", "best campaign", "top campaign")):
+        ranked = sorted(
+            campaigns_last7,
+            key=lambda item: (item.get("sales", 0), item.get("roas", 0), item.get("orders", 0)),
+            reverse=True,
+        )
+        if ranked:
+            leaders = ranked[:5]
+            answer = "Based on ad sales for " + period_label + ", the leading campaigns are: " + "; ".join(
+                f"{item['name']} ({currency_amount_text(item['sales'], item.get('currency'))} sales, {item['orders']} orders, {item['roas']:.2f} ROAS, {item['clicks']} clicks)"
+                for item in leaders
+            ) + ". I rank by ad sales first, then ROAS, so a small high-ROAS campaign does not hide the campaign driving the most revenue."
+            evidence.append(f"Amazon Ads, {period_label}, report ending {leaders[0].get('reportDate') or 'latest'}")
+        else:
+            answer = f"I do not have campaign rows for {period_label} yet, so I cannot rank them."
+    elif "design" in normalized and any(phrase in normalized for phrase in ("not advertised", "aren't advertised", "unadvertised", "should be advertised", "advertise")):
+        campaign_names = [str(item.get("name", "")).lower() for item in campaigns_last7]
+        candidates = []
+        for design in designs_last7:
+            title = str(design.get("title", ""))
+            words = {word for word in title.lower().split() if len(word) >= 4}
+            has_campaign_match = any(
+                title.lower() in name or len(words & {word for word in name.split() if len(word) >= 4}) >= 2
+                for name in campaign_names
+            )
+            if not has_campaign_match:
+                candidates.append(design)
+        if candidates:
+            answer = "The strongest designs without an obvious campaign-name match are: " + "; ".join(
+                f"{item['title']} ({item['units']} units, {design_royalties_text(item)} royalties)"
+                for item in candidates[:8]
+            ) + ". These are candidates for advertising review, not proof that no ad target exists; confirm by ASIN before creating a campaign."
+            evidence.append(f"Merch sales and Amazon campaign names, {period_label}")
+        else:
+            answer = "Every design in the current sales view has at least one obvious campaign-name match. Review ASIN-level coverage for gaps."
     elif any(phrase in normalized for phrase in ("heating up", "top design", "best design", "selling")):
         leaders = designs_last7[:5]
         answer = "The strongest designs in the latest seven-day sales data are: " + "; ".join(
