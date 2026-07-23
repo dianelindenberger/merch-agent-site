@@ -2885,33 +2885,78 @@ def ai_placements_provider(campaign="", period="last7", limit=20):
 
 def build_ai_tool_layer():
     write_coordinator = RecommendationWriteCoordinator(str(DB_PATH))
+
+    def normalized_market_code(value):
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return ""
+        if normalized in MARKET_NAMES:
+            return normalized
+        detected = market_from_text(normalized)
+        if detected:
+            return detected
+        for code, name in MARKET_NAMES.items():
+            if normalized == name.lower():
+                return code
+        return ""
+
     def query_sales(period="last7", market="", limit=20):
         payload = home_payload(period)
         markets = payload.get("markets", [])
         products = payload.get("products", [])
+        units = payload.get("sales", 0)
+        returns = payload.get("returns", 0)
+        royalties_by_currency = payload.get("royaltyByCurrency", [])
+        market_code = normalized_market_code(market)
         if market:
-            markets = [item for item in markets if market.lower() in str(item.get("name", "")).lower()]
-            products = [item for item in products if market.lower() in str(item.get("market", "")).lower()]
+            market_name = MARKET_NAMES.get(market_code, str(market).strip())
+            markets = [
+                item for item in markets
+                if (
+                    market_code and str(item.get("code", "")).lower() == market_code
+                ) or str(item.get("name", "")).lower() == market_name.lower()
+            ]
+            products = [
+                item for item in products
+                if str(item.get("market", "")).lower() == market_name.lower()
+            ]
+            units = sum(int(item.get("units", 0) or 0) for item in markets)
+            returns = sum(int(item.get("returned", 0) or 0) for item in markets)
+            royalty_totals = {}
+            for item in markets:
+                currency = str(item.get("currency") or "USD").upper()
+                royalty_totals[currency] = money(
+                    royalty_totals.get(currency, 0) + float(item.get("royalties", 0) or 0)
+                )
+            royalties_by_currency = [
+                {"currency": currency, "amount": amount}
+                for currency, amount in sorted(royalty_totals.items())
+            ]
         return {
             "period": period,
             "periodStart": payload.get("periodStart", ""),
             "periodEnd": payload.get("periodEnd", ""),
             "reportDate": payload.get("reportDate", ""),
-            "units": payload.get("sales", 0),
-            "royaltiesByCurrency": payload.get("royaltyByCurrency", []),
-            "returns": payload.get("returns", 0),
+            "requestedMarket": market,
+            "marketCode": market_code,
+            "marketMatched": bool(markets) if market else True,
+            "units": units,
+            "royaltiesByCurrency": royalties_by_currency,
+            "returns": returns,
             "markets": markets[:limit],
             "products": products[:limit],
         }
 
     def query_designs(period="last7", market="", search="", limit=20):
-        payload = designs_payload(period, market or None)
+        market_code = normalized_market_code(market)
+        payload = designs_payload(period, market_code or market or None)
         designs = payload.get("designs", [])
         if search:
             designs = [item for item in designs if search.lower() in str(item.get("title", "")).lower()]
         return {
             "period": period,
             "market": market,
+            "marketCode": market_code,
             "reportDate": payload.get("reportDate", ""),
             "designs": designs[:limit],
         }
