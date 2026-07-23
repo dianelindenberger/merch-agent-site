@@ -20,6 +20,8 @@ const state = {
   selectedAdGroup: "",
   campaignDetail: null,
   campaignDetailError: "",
+  campaignDetailLoading: false,
+  campaignDetailRequest: 0,
   analyticsData: null,
   analyticsError: "",
   analyticsShowSales: true,
@@ -93,6 +95,8 @@ function backLabel() {
 
 function goBack() {
   if (hasSubscreen()) {
+    state.campaignDetailRequest += 1;
+    state.campaignDetailLoading = false;
     state.selectedCampaign = "";
     state.selectedAdGroup = "";
     state.campaignDetail = null;
@@ -103,7 +107,10 @@ function goBack() {
 
   if (state.page !== "home") {
     state.page = "home";
+    state.homeData = null;
+    state.homeLoading = true;
     render();
+    loadHomeData();
   }
 }
 
@@ -419,21 +426,37 @@ async function previewLoggedChange() {
 }
 
 async function loadCampaignDetail(campaignName) {
+  if (!campaignName || state.campaignDetailLoading) return;
+  const requestId = ++state.campaignDetailRequest;
   state.selectedCampaign = campaignName;
   state.selectedAdGroup = "";
   state.campaignDetail = null;
   state.campaignDetailError = "";
+  state.campaignDetailLoading = true;
   render();
 
   try {
-    const response = await fetch(`/api/campaign-detail?period=last30&name=${encodeURIComponent(campaignName)}`, { cache: "no-store" });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const response = await fetch(`/api/campaign-detail?period=last30&name=${encodeURIComponent(campaignName)}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
     if (!response.ok) throw new Error(`API returned ${response.status}`);
-    state.campaignDetail = await response.json();
+    const detail = await response.json();
+    if (requestId === state.campaignDetailRequest) state.campaignDetail = detail;
   } catch (error) {
-    state.campaignDetailError = "Campaign targets could not be loaded from the local database.";
+    if (requestId === state.campaignDetailRequest) {
+      state.campaignDetailError = error.name === "AbortError"
+        ? "Campaign details took too long to load. Please try again."
+        : "Campaign targets could not be loaded from the local database.";
+    }
+  } finally {
+    if (requestId === state.campaignDetailRequest) state.campaignDetailLoading = false;
   }
 
-  render();
+  if (requestId === state.campaignDetailRequest) render();
 }
 
 async function saveCampaignChange(messageIndex, source = "ai") {
@@ -557,8 +580,17 @@ function renderHome() {
   const summary = homeData.summary?.length ? homeData.summary : fallbackHomeData().summary;
   const briefing = homeData.businessBriefing;
   const reportDate = homeData.reportDate || homeData.latestImport || "Latest import";
-  const sourceNote = state.homeError
-    ? `<section class="card"><div class="sub">${escapeHtml(state.homeError)}</div></section>`
+  const expectedYesterday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
+  const isYesterdayBehind = homeData.period === "yesterday"
+    && /^\d{4}-\d{2}-\d{2}$/.test(String(homeData.reportDate || ""))
+    && homeData.reportDate < expectedYesterday;
+  const sourceMessages = [];
+  if (state.homeError) sourceMessages.push(state.homeError);
+  if (isYesterdayBehind) {
+    sourceMessages.push(`No Merch sales report is available for ${expectedYesterday} yet. Showing the latest imported day, ${homeData.reportDate}.`);
+  }
+  const sourceNote = sourceMessages.length
+    ? `<section class="card"><div class="sub">${sourceMessages.map(escapeHtml).join(" ")}</div></section>`
     : "";
 
   return `
@@ -915,7 +947,7 @@ function renderCampaignDetail() {
   }
 
   if (!state.campaignDetail) {
-    return `<section class="card"><div class="sub">Loading campaign bids and targets...</div></section>`;
+    return `<section class="card"><div class="sub">${state.campaignDetailLoading ? "Loading campaign bids and targets..." : "Campaign details are not available."}</div></section>`;
   }
 
   const data = state.campaignDetail;
@@ -1552,7 +1584,18 @@ function render() {
   document.querySelectorAll("[data-page]").forEach((button) => {
     button.addEventListener("click", () => {
       state.page = button.dataset.page;
-      render();
+      if (state.page === "home") {
+        state.campaignDetailRequest += 1;
+        state.campaignDetailLoading = false;
+        state.selectedCampaign = "";
+        state.campaignDetail = null;
+        state.homeData = null;
+        state.homeLoading = true;
+        render();
+        loadHomeData();
+      } else {
+        render();
+      }
     });
   });
 
