@@ -145,11 +145,12 @@ def import_merch_sales_payload(payload):
     if str(payload.get("source", "")).strip():
         source = str(payload["source"]).strip()[:80]
     digest = hashlib.sha256(raw).hexdigest()
+    reprocess = bool(payload.get("reprocess"))
     conn = connect()
     ensure_sales_import_runs_table(conn)
     prior = conn.execute("SELECT id FROM sales_import_runs WHERE file_hash = ? AND status = 'success' LIMIT 1", (digest,)).fetchone()
     conn.close()
-    if prior:
+    if prior and not reprocess:
         return {"ok": True, "alreadyImported": True, "fileHash": digest, "message": "This sales report was already imported.", "status": sales_status_payload()}
 
     rows_processed = 0
