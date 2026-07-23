@@ -39,6 +39,17 @@ from report_utils import file_hash, normalize_columns, read_report  # noqa: E402
 from daily_audit import build_daily_audit  # noqa: E402
 from database import DATA_DIR, DB_PATH, setup_database  # noqa: E402
 from reporting_day import amazon_reporting_date  # noqa: E402
+from ai_assistant import (  # noqa: E402
+    AssistantConfig,
+    AssistantUnavailable,
+    ConversationStore,
+    ResponsesAssistant,
+    UngroundedAnswer,
+    owner_hash,
+)
+from ai_tools import RestrictedAIToolLayer  # noqa: E402
+from ai_usage import UsageControls, UsageLimitReached  # noqa: E402
+from ai_writes import RecommendationWriteCoordinator  # noqa: E402
 
 INCOMING_REPORTS = Path(os.getenv("MERCH_AGENT_REPORTS_DIR", DATA_DIR / "incoming_reports")).expanduser().resolve()
 AUTH_USERNAME = os.getenv("MERCH_AGENT_USERNAME", "").strip()
@@ -2762,6 +2773,329 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
     }
 
 
+def ai_search_terms_provider(campaign="", search="", period="last7", limit=20):
+    conn = connect()
+    cur = conn.cursor()
+    latest_import = latest_table_import(cur, "search_terms", period)
+    if not latest_import:
+        conn.close()
+        return {"period": period, "reportDate": "", "searchTerms": []}
+    where = [
+        "import_date = ?",
+        "COALESCE(report_period, 'unspecified') = ?",
+    ]
+    params = [latest_import, period]
+    if campaign:
+        where.append("LOWER(campaign_name) LIKE ?")
+        params.append(f"%{campaign.lower()}%")
+    if search:
+        where.append("(LOWER(search_term) LIKE ? OR LOWER(COALESCE(keyword, '')) LIKE ? OR LOWER(COALESCE(targeting, '')) LIKE ?)")
+        search_like = f"%{search.lower()}%"
+        params.extend([search_like, search_like, search_like])
+    params.append(limit)
+    rows = cur.execute(
+        f"""SELECT campaign_name, COALESCE(ad_group_name, '') AS ad_group_name,
+                   COALESCE(search_term, '') AS search_term, COALESCE(keyword, '') AS keyword,
+                   COALESCE(targeting, '') AS targeting, COALESCE(match_type, '') AS match_type,
+                   SUM(COALESCE(impressions, 0)) AS impressions, SUM(COALESCE(clicks, 0)) AS clicks,
+                   SUM(COALESCE(spend, 0)) AS spend, SUM(COALESCE(orders, 0)) AS orders,
+                   SUM(COALESCE(sales, 0)) AS sales, MAX(COALESCE(report_date, '')) AS report_date
+            FROM search_terms
+            WHERE {' AND '.join(where)}
+            GROUP BY campaign_name, COALESCE(ad_group_name, ''), COALESCE(search_term, ''),
+                     COALESCE(keyword, ''), COALESCE(targeting, ''), COALESCE(match_type, '')
+            ORDER BY SUM(COALESCE(sales, 0)) DESC, SUM(COALESCE(orders, 0)) DESC,
+                     SUM(COALESCE(spend, 0)) DESC
+            LIMIT ?""",
+        params,
+    ).fetchall()
+    conn.close()
+    items = []
+    report_date = ""
+    for row in rows:
+        spend = money(row["spend"])
+        sales = money(row["sales"])
+        report_date = max(report_date, row["report_date"] or "")
+        items.append({
+            "campaign": row["campaign_name"],
+            "adGroup": row["ad_group_name"],
+            "searchTerm": row["search_term"],
+            "keyword": row["keyword"],
+            "targeting": row["targeting"],
+            "matchType": row["match_type"],
+            "impressions": int(row["impressions"] or 0),
+            "clicks": int(row["clicks"] or 0),
+            "spend": spend,
+            "orders": int(row["orders"] or 0),
+            "sales": sales,
+            "roas": round(sales / spend, 2) if spend else 0,
+        })
+    return {"period": period, "reportDate": report_date, "searchTerms": items}
+
+
+def ai_placements_provider(campaign="", period="last7", limit=20):
+    conn = connect()
+    cur = conn.cursor()
+    latest_import = latest_table_import(cur, "placements", period)
+    if not latest_import:
+        conn.close()
+        return {"period": period, "reportDate": "", "placements": []}
+    where = ["import_date = ?", "COALESCE(report_period, 'unspecified') = ?"]
+    params = [latest_import, period]
+    if campaign:
+        where.append("LOWER(campaign_name) LIKE ?")
+        params.append(f"%{campaign.lower()}%")
+    params.append(limit)
+    rows = cur.execute(
+        f"""SELECT campaign_name, placement, COALESCE(country, '') AS country,
+                   COALESCE(currency, '') AS currency,
+                   SUM(COALESCE(impressions, 0)) AS impressions, SUM(COALESCE(clicks, 0)) AS clicks,
+                   SUM(COALESCE(spend, 0)) AS spend, SUM(COALESCE(orders, 0)) AS orders,
+                   SUM(COALESCE(units, 0)) AS units, SUM(COALESCE(sales, 0)) AS sales,
+                   MAX(COALESCE(report_date, '')) AS report_date
+            FROM placements
+            WHERE {' AND '.join(where)}
+            GROUP BY campaign_name, placement, COALESCE(country, ''), COALESCE(currency, '')
+            ORDER BY SUM(COALESCE(sales, 0)) DESC, SUM(COALESCE(spend, 0)) DESC
+            LIMIT ?""",
+        params,
+    ).fetchall()
+    conn.close()
+    items = []
+    report_date = ""
+    for row in rows:
+        spend = money(row["spend"])
+        sales = money(row["sales"])
+        report_date = max(report_date, row["report_date"] or "")
+        items.append({
+            "campaign": row["campaign_name"],
+            "placement": row["placement"],
+            "country": row["country"],
+            "currency": row["currency"],
+            "impressions": int(row["impressions"] or 0),
+            "clicks": int(row["clicks"] or 0),
+            "spend": spend,
+            "orders": int(row["orders"] or 0),
+            "units": int(row["units"] or 0),
+            "sales": sales,
+            "roas": round(sales / spend, 2) if spend else 0,
+        })
+    return {"period": period, "reportDate": report_date, "placements": items}
+
+
+def build_ai_tool_layer():
+    write_coordinator = RecommendationWriteCoordinator(str(DB_PATH))
+    def query_sales(period="last7", market="", limit=20):
+        payload = home_payload(period)
+        markets = payload.get("markets", [])
+        products = payload.get("products", [])
+        if market:
+            markets = [item for item in markets if market.lower() in str(item.get("name", "")).lower()]
+            products = [item for item in products if market.lower() in str(item.get("market", "")).lower()]
+        return {
+            "period": period,
+            "periodStart": payload.get("periodStart", ""),
+            "periodEnd": payload.get("periodEnd", ""),
+            "reportDate": payload.get("reportDate", ""),
+            "units": payload.get("sales", 0),
+            "royaltiesByCurrency": payload.get("royaltyByCurrency", []),
+            "returns": payload.get("returns", 0),
+            "markets": markets[:limit],
+            "products": products[:limit],
+        }
+
+    def query_designs(period="last7", market="", search="", limit=20):
+        payload = designs_payload(period, market or None)
+        designs = payload.get("designs", [])
+        if search:
+            designs = [item for item in designs if search.lower() in str(item.get("title", "")).lower()]
+        return {
+            "period": period,
+            "market": market,
+            "reportDate": payload.get("reportDate", ""),
+            "designs": designs[:limit],
+        }
+
+    def query_campaigns(period="last7", search="", limit=20):
+        payload = campaigns_payload(period, search)
+        return {
+            "period": period,
+            "reportDate": payload.get("reportDate", ""),
+            "campaigns": payload.get("campaigns", [])[:limit],
+        }
+
+    def query_ad_groups(campaign, period="last7", limit=20):
+        payload = campaign_detail_payload(campaign, period)
+        return {
+            "period": period,
+            "campaign": campaign,
+            "reportDate": payload.get("reportDate") or payload.get("targetReportDate", ""),
+            "adGroups": payload.get("adGroups", [])[:limit],
+        }
+
+    def query_targets(campaign, period="last7", limit=20):
+        payload = campaign_detail_payload(campaign, period)
+        return {
+            "period": period,
+            "campaign": campaign,
+            "reportDate": payload.get("reportDate") or payload.get("targetReportDate", ""),
+            "targets": payload.get("targets", [])[:limit],
+        }
+
+    def query_recommendations(period="last7", status="all", limit=20):
+        audit = build_daily_audit()
+        history = recommendation_history_context(limit=limit)
+        history_by_id = {item.get("recommendationId"): item for item in history}
+
+        def recommendation_with_id(recommendation_type, item):
+            recommendation_id = "|".join(str(value or "") for value in (
+                recommendation_type,
+                item.get("campaignName"),
+                item.get("target") or item.get("searchTerm") or item.get("title"),
+                item.get("action") or item.get("pattern"),
+                item.get("currentBid"),
+                item.get("suggestedBid"),
+                item.get("reportDate") or item.get("periodEnd"),
+            ))
+            saved = history_by_id.get(recommendation_id, {})
+            return {
+                **item,
+                "recommendationId": recommendation_id,
+                "recommendationType": recommendation_type,
+                "status": saved.get("status", "Proposed"),
+                "userNotes": saved.get("userNotes", ""),
+            }
+
+        recommendations = []
+        for key, recommendation_type in (
+            ("bidRecommendations14Day", "bid_14"),
+            ("bidRecommendations", "bid_30"),
+            ("searchTermFindings14Day", "search_14"),
+            ("searchTermFindings", "search_30"),
+            ("salesPatternOpportunities", "sales_opportunity"),
+        ):
+            recommendations.extend(
+                recommendation_with_id(recommendation_type, item)
+                for item in (audit.get(key) or [])
+            )
+        if status != "all":
+            recommendations = [item for item in recommendations if item.get("status") == status]
+        return {
+            "period": period,
+            "reportDate": audit.get("targetReportDate") or audit.get("salesDataThrough", ""),
+            "recommendations": recommendations[:limit],
+            "decisionHistory": history[:limit],
+        }
+
+    def compare_periods(entity, period_a, period_b, search="", market="", limit=20):
+        if entity == "sales":
+            first = query_sales(period_a, market, limit)
+            second = query_sales(period_b, market, limit)
+        elif entity == "designs":
+            first = query_designs(period_a, market, search, limit)
+            second = query_designs(period_b, market, search, limit)
+        else:
+            first = query_campaigns(period_a, search, limit)
+            second = query_campaigns(period_b, search, limit)
+        return {"entity": entity, "periodA": first, "periodB": second}
+
+    def prepare_write(tool_name, _context, **arguments):
+        conversation_id = str((_context or {}).get("conversation_id") or "")
+        pending = write_coordinator.prepare(conversation_id, tool_name, arguments)
+        return {
+            "requiresConfirmation": True,
+            "confirmationToken": pending.confirmation_token,
+            "tool": pending.tool_name,
+            "arguments": pending.arguments,
+            "expiresAt": pending.expires_at,
+            "duplicatePending": pending.duplicate,
+            "instruction": 'No write has occurred. Ask the user to reply "confirm" to apply this internal Merch Agent action.',
+        }
+
+    return RestrictedAIToolLayer({
+        "query_sales": query_sales,
+        "query_designs": query_designs,
+        "query_campaigns": query_campaigns,
+        "query_ad_groups": query_ad_groups,
+        "query_targets": query_targets,
+        "query_search_terms": ai_search_terms_provider,
+        "query_placements": ai_placements_provider,
+        "query_recommendations": query_recommendations,
+        "compare_periods": compare_periods,
+        "record_user_action": lambda _context, **kwargs: prepare_write("record_user_action", _context, **kwargs),
+        "defer_recommendation": lambda _context, **kwargs: prepare_write("defer_recommendation", _context, **kwargs),
+        "dismiss_recommendation": lambda _context, **kwargs: prepare_write("dismiss_recommendation", _context, **kwargs),
+        "add_user_note": lambda _context, **kwargs: prepare_write("add_user_note", _context, **kwargs),
+    }, allow_local_writes=True)
+
+
+_AI_ASSISTANT = None
+
+
+def openai_assistant():
+    global _AI_ASSISTANT
+    if _AI_ASSISTANT is None:
+        _AI_ASSISTANT = ResponsesAssistant(
+            tools=build_ai_tool_layer(),
+            store=ConversationStore(str(DB_PATH)),
+            config=AssistantConfig.from_env(),
+            write_coordinator=RecommendationWriteCoordinator(str(DB_PATH)),
+        )
+    return _AI_ASSISTANT
+
+
+def ai_usage_payload():
+    return UsageControls(str(DB_PATH)).stats()
+
+
+def update_ai_settings(payload):
+    updates = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+    if not isinstance(updates, dict):
+        raise ValueError("AI settings must be an object.")
+    return {"ok": True, "settings": UsageControls(str(DB_PATH)).update_settings(updates)}
+
+
+def hybrid_assistant_payload(
+    question,
+    conversation_id,
+    identity,
+    requested_period="last7",
+    history=None,
+    recommendation_context=None,
+):
+    config = AssistantConfig.from_env()
+    if config.mode == "rules":
+        result = assistant_payload(question, history or [], requested_period, recommendation_context)
+        result.update({"source": "deterministic_rules", "fallback": False})
+        return result
+    try:
+        return openai_assistant().answer(
+            question,
+            conversation_id=conversation_id,
+            owner_hash=owner_hash(identity),
+            authenticated=authentication_enabled(),
+            default_period=requested_period,
+        )
+    except (AssistantUnavailable, UngroundedAnswer, UsageLimitReached, ValueError) as exc:
+        if config.mode == "hybrid":
+            result = assistant_payload(question, history or [], requested_period, recommendation_context)
+            reason = (
+                "usage_limit"
+                if isinstance(exc, UsageLimitReached)
+                else "grounding_guard"
+                if isinstance(exc, UngroundedAnswer)
+                else "openai_unavailable"
+            )
+            result.update({
+                "source": "rules_fallback",
+                "fallback": True,
+                "fallbackReason": reason,
+                "fallbackLabel": "Rules fallback",
+            })
+            return result
+        raise
+
+
 class MerchAgentHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
@@ -2823,6 +3157,10 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/recommendation-interactions":
             self.send_json(recommendation_interactions_payload())
+            return
+
+        if parsed.path == "/api/ai-usage":
+            self.send_json(ai_usage_payload())
             return
 
         if parsed.path == "/api/home":
@@ -2904,7 +3242,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        allowed_paths = {"/api/assistant", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales", "/api/recommendation-interaction"}
+        allowed_paths = {"/api/assistant", "/api/ai-settings", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales", "/api/recommendation-interaction"}
         if parsed.path not in allowed_paths:
             self.send_json({"error": "Not found"}, 404)
             return
@@ -2955,18 +3293,27 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             elif parsed.path == "/api/recommendation-interaction":
                 result = save_recommendation_interaction(payload)
                 self.send_json(result, 200 if result.get("ok") else 400)
+            elif parsed.path == "/api/ai-settings":
+                result = update_ai_settings(payload)
+                self.send_json(result)
             elif parsed.path == "/api/refresh-ads-now":
                 result = start_hosted_ads_refresh_now()
                 self.send_json(result, 202 if result.get("ok") else 409)
             else:
-                self.send_json(assistant_payload(
-                    payload.get("question", ""),
-                    payload.get("history", []),
+                question = payload.get("question", "")
+                ai_result = hybrid_assistant_payload(
+                    question,
+                    payload.get("conversationId", ""),
+                    f"{AUTH_USERNAME}:{self.headers.get('Authorization', '')}",
                     payload.get("period", "last7"),
+                    payload.get("history", []),
                     payload.get("recommendationContext"),
-                ))
+                )
+                self.send_json(ai_result)
         except (ValueError, json.JSONDecodeError):
             self.send_json({"error": "Invalid request"}, 400)
+        except (AssistantUnavailable, UngroundedAnswer):
+            self.send_json({"error": "The AI assistant is temporarily unavailable."}, 503)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ const state = {
   aiLoading: false,
   aiError: "",
   aiDraft: "",
+  aiConversationId: "",
   aiFocusComposer: false,
   aiScrollToBottom: false,
   aiMode: "audit",
@@ -56,6 +57,9 @@ const state = {
   salesUploadMessage: "",
   salesUploadError: "",
   salesStatus: null,
+  aiUsage: null,
+  aiUsageError: "",
+  aiSettingsSaving: false,
   recommendationInteractions: {},
   openRecommendationIds: new Set(),
   activeRecommendation: null,
@@ -149,6 +153,7 @@ function navigateToPage(page) {
     loadHomeData();
   } else {
     render({ preserveScroll: false });
+    if (page === "more") loadAIUsage();
   }
 }
 
@@ -302,6 +307,18 @@ async function loadSalesStatus() {
   if (state.page === "more") render();
 }
 
+async function loadAIUsage() {
+  state.aiUsageError = "";
+  try {
+    const response = await fetch("/api/ai-usage", { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.aiUsage = await response.json();
+  } catch (error) {
+    state.aiUsageError = error?.message || "AI usage could not be loaded.";
+  }
+  if (state.page === "more") render();
+}
+
 async function loadRecommendationInteractions() {
   try {
     const response = await fetch("/api/recommendation-interactions", { cache: "no-store" });
@@ -422,6 +439,7 @@ async function askAssistant(question) {
       body: JSON.stringify({
         question: cleanQuestion,
         period: state.homePeriod,
+        conversationId: state.aiConversationId,
         history: state.aiMessages.slice(-8).map(({ role, text }) => ({ role, text })),
         recommendationContext: state.activeRecommendation?.context || null,
       }),
@@ -432,7 +450,16 @@ async function askAssistant(question) {
     }
 
     const data = await response.json();
-    state.aiMessages.push({ role: "ai", text: data.answer, evidence: data.evidence || [], pendingLog: data.pendingLog || null, saved: false });
+    if (data.conversationId) state.aiConversationId = data.conversationId;
+    state.aiMessages.push({
+      role: "ai",
+      text: data.answer,
+      evidence: data.evidence || [],
+      pendingLog: data.pendingLog || null,
+      fallbackLabel: data.fallbackLabel || "",
+      source: data.source || "",
+      saved: false,
+    });
     if (data.action?.type === "navigate" && data.action.page) {
       state.page = data.action.page;
       if (data.action.adsTab) state.adsTab = data.action.adsTab;
@@ -1312,18 +1339,23 @@ function renderAssistantText(text) {
   let listOpen = false;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("•")) {
+    const isBullet = trimmed.startsWith("•") || trimmed.startsWith("- ");
+    if (isBullet) {
       if (!listOpen) {
         html += '<ul class="assistant-answer-list">';
         listOpen = true;
       }
-      html += `<li>${escapeHtml(trimmed.slice(1).trim())}</li>`;
+      html += `<li>${escapeHtml(trimmed.replace(/^(•|-)\s*/, ""))}</li>`;
     } else {
       if (listOpen) {
         html += "</ul>";
         listOpen = false;
       }
-      if (trimmed) html += `<p>${escapeHtml(trimmed)}</p>`;
+      const normalizedHeading = trimmed.replace(/:$/, "");
+      const isHeading = ["Verified facts", "Calculation", "Calculations", "Recommendation", "Recommendations", "Inference", "Inferences", "Unavailable data"].includes(normalizedHeading);
+      if (trimmed) html += isHeading
+        ? `<strong class="assistant-answer-heading">${escapeHtml(trimmed)}</strong>`
+        : `<p>${escapeHtml(trimmed)}</p>`;
     }
   }
   if (listOpen) html += "</ul>";
@@ -1333,6 +1365,7 @@ function renderAssistantText(text) {
 function renderAssistantMessage(message, index, source) {
   return `
     <div class="bubble ${message.role} ${message.pendingLog ? "has-pending-log" : ""}">
+      ${message.fallbackLabel ? `<div class="status-pill watch">${escapeHtml(message.fallbackLabel)}</div>` : ""}
       ${renderAssistantText(message.text)}
       ${message.evidence?.length ? `
         <div class="evidence-list">
@@ -1766,6 +1799,8 @@ function renderMore() {
     ["Amazon Ads", state.adsData?.reportDate || "Not loaded", state.adsData?.partial ? "Includes partial data" : "Report through"],
     ["Campaign performance", state.campaignsData?.reportDate || "Not loaded", "Report through"],
   ];
+  const usage = state.aiUsage;
+  const settings = usage?.settings || {};
   return `
     <div class="stack">
       <section class="card">
@@ -1798,6 +1833,56 @@ function renderMore() {
         ${salesStatus.lastError ? `<div class="negative sub">${escapeHtml(salesStatus.lastError)}</div>` : ""}
       </section>
       <button type="button" class="primary-button wide-button" data-refresh-all>Refresh displayed data</button>
+      <section class="card">
+        <div class="row">
+          <div>
+            <h2 class="section-title">AI Usage</h2>
+            <div class="sub">Actual API usage returned by OpenAI. No keys or hidden prompts are shown.</div>
+          </div>
+          <span class="status-pill ${usage && usage.actualCostUsd < Number(settings.monthlyLimitUsd || 10) ? "performing" : "review"}">
+            ${usage ? formatMoney(usage.actualCostUsd) : "Loading"}
+          </span>
+        </div>
+        ${state.aiUsageError ? `<div class="negative sub">${escapeHtml(state.aiUsageError)}</div>` : ""}
+        ${usage ? `
+          <div class="metric-grid compact">
+            ${moneyCard("Actual this month", formatMoney(usage.actualCostUsd), usage.month)}
+            ${moneyCard("Projected month-end", formatMoney(usage.projectedMonthEndCostUsd), `Limit ${formatMoney(settings.monthlyLimitUsd)}`)}
+            ${moneyCard("Requests", Number(usage.requestCount || 0).toLocaleString(), `${Number(usage.todayRequestCount || 0).toLocaleString()} today`)}
+            ${moneyCard("Tool calls", Number(usage.toolCallCount || 0).toLocaleString(), `${Number(usage.averageResponseTimeMs || 0).toLocaleString()} ms average`)}
+          </div>
+          <div class="status-list">
+            <div class="status-row"><div class="title">Input tokens</div><strong>${Number(usage.inputTokens || 0).toLocaleString()}</strong></div>
+            <div class="status-row"><div class="title">Cached input tokens</div><strong>${Number(usage.cachedInputTokens || 0).toLocaleString()}</strong></div>
+            <div class="status-row"><div class="title">Output tokens</div><strong>${Number(usage.outputTokens || 0).toLocaleString()}</strong></div>
+            <div class="status-row"><div class="title">Calls by model</div><strong>${(usage.callsByModel || []).map((item) => `${item.model}: ${item.calls}`).join(" | ") || "None"}</strong></div>
+            <div class="status-row"><div class="title">Calls by status</div><strong>${(usage.callsByStatus || []).map((item) => `${item.status}: ${item.calls}`).join(" | ") || "None"}</strong></div>
+          </div>
+          <h3 class="section-title">Usage controls</h3>
+          <div class="custom-range ai-settings-grid">
+            <label>Warning ($)<input type="number" min="0.01" step="0.01" data-ai-setting="warningThresholdUsd" value="${escapeHtml(settings.warningThresholdUsd)}"></label>
+            <label>Monthly limit ($)<input type="number" min="0.01" step="0.01" data-ai-setting="monthlyLimitUsd" value="${escapeHtml(settings.monthlyLimitUsd)}"></label>
+            <label>Daily requests<input type="number" min="1" step="1" data-ai-setting="dailyRequestLimit" value="${escapeHtml(settings.dailyRequestLimit)}"></label>
+            <label>Max input tokens<input type="number" min="500" step="100" data-ai-setting="maxInputTokens" value="${escapeHtml(settings.maxInputTokens)}"></label>
+            <label>Max output tokens<input type="number" min="100" step="100" data-ai-setting="maxOutputTokens" value="${escapeHtml(settings.maxOutputTokens)}"></label>
+            <label>Terra escalation<input type="checkbox" data-ai-setting="terraEnabled" ${settings.terraEnabled ? "checked" : ""}></label>
+          </div>
+          <div class="sub">Default model: ${escapeHtml(settings.defaultModel || "Not configured")} | Complex model: ${escapeHtml(settings.complexModel || "Not configured")}</div>
+          <button type="button" class="primary-button wide-button" data-save-ai-settings ${state.aiSettingsSaving ? "disabled" : ""}>${state.aiSettingsSaving ? "Saving..." : "Save AI limits"}</button>
+          ${(usage.recentErrors || []).length ? `
+            <h3 class="section-title">Recent errors</h3>
+            <div class="status-list">${usage.recentErrors.map((item) => `
+              <div class="status-row"><div><div class="title">${escapeHtml(item.errorCode)}</div><div class="sub">${escapeHtml(item.createdAt)}</div></div><strong>${escapeHtml(item.model)}</strong></div>
+            `).join("")}</div>
+          ` : ""}
+          ${(usage.recentToolCalls || []).length ? `
+            <h3 class="section-title">Recent approved tool calls</h3>
+            <div class="status-list">${usage.recentToolCalls.map((item) => `
+              <div class="status-row"><div><div class="title">${escapeHtml(item.tool)}</div><div class="sub">${escapeHtml(item.createdAt)}</div></div><strong>${escapeHtml(item.status)}</strong></div>
+            `).join("")}</div>
+          ` : ""}
+        ` : `<div class="sub">Loading AI usage...</div>`}
+      </section>
       <section class="card sales-upload-card">
         <div>
           <h2 class="section-title">Upload Merch sales report</h2>
@@ -1869,7 +1954,34 @@ function render({ preserveScroll = true } = {}) {
         loadDailyAudit(),
         loadChangeOptions(),
         loadRecommendationInteractions(),
+        loadAIUsage(),
       ]);
+    });
+  });
+
+  document.querySelectorAll("[data-save-ai-settings]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const values = {};
+      document.querySelectorAll("[data-ai-setting]").forEach((input) => {
+        values[input.dataset.aiSetting] = input.type === "checkbox" ? input.checked : Number(input.value);
+      });
+      state.aiSettingsSaving = true;
+      render();
+      try {
+        const response = await fetch("/api/ai-settings", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: values }),
+        });
+        if (!response.ok) throw new Error(`API returned ${response.status}`);
+        await loadAIUsage();
+      } catch (error) {
+        state.aiUsageError = error?.message || "AI settings could not be saved.";
+      } finally {
+        state.aiSettingsSaving = false;
+        render();
+      }
     });
   });
 
