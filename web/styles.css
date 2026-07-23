@@ -1331,6 +1331,11 @@ svg {
 }
 
 .audit-workspace { gap: 12px; }
+.audit-workspace > .audit-section { order: 10; }
+.audit-workspace > .bid-14-day { order: 1; }
+.audit-workspace > .bid-30-day { order: 2; }
+.audit-workspace > .search-14-day { order: 3; }
+.audit-workspace > .search-30-day { order: 4; }
 .audit-summary { display: grid; gap: 14px; background: #f4f5ff; border-color: #d8dcf7; }
 .audit-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .audit-counts div { display: grid; gap: 2px; padding: 10px 7px; border: 1px solid var(--line); border-radius: 12px; background: #fff; text-align: center; }

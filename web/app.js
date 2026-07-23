@@ -1511,7 +1511,7 @@ function renderDailyAudit() {
         ${audit.targetDataStale ? `<div class="audit-stale-warning">Target data is ${audit.targetReportDate ? `only current through ${escapeHtml(audit.targetReportDate)}` : "missing a report date"}. Refresh before acting on these bid suggestions.</div>` : ""}
       </section>
 
-      <section class="card audit-section">
+      <section class="card audit-section bid-30-day">
         <div class="row">
           <h2 class="section-title">Recommended bid actions</h2>
           <span class="label">${changes.length}</span>
@@ -1534,7 +1534,7 @@ function renderDailyAudit() {
         ${changes.length > 20 ? `<div class="sub">Showing the 20 highest-priority actions of ${changes.length}.</div>` : ""}
       </section>
 
-      <section class="card audit-section">
+      <section class="card audit-section bid-14-day">
         <div class="row">
           <div>
             <h2 class="section-title">14-day bid actions</h2>
@@ -1560,7 +1560,7 @@ function renderDailyAudit() {
         ${fourteenDayRecommendations.length > 20 ? `<div class="sub">Showing the 20 highest-priority 14-day actions of ${fourteenDayRecommendations.length}.</div>` : ""}
       </section>
 
-      <section class="card audit-section">
+      <section class="card audit-section search-30-day">
         <div class="row">
           <h2 class="section-title">Search-term findings</h2>
           <span class="label">${searchTerms.length}</span>
@@ -1577,7 +1577,7 @@ function renderDailyAudit() {
         `).join("") : `<div class="audit-empty">Waiting for the first Amazon search-term report to complete. The checkpointed report will resume during the next refresh.</div>`}
       </section>
 
-      <section class="card audit-section">
+      <section class="card audit-section search-14-day">
         <div class="row">
           <div>
             <h2 class="section-title">14-day search-term findings</h2>
