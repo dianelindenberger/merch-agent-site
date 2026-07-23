@@ -165,6 +165,18 @@ function formatCurrencyBreakdown(items, fallbackValue = 0, fallbackCurrency = "U
   return values.map((item) => formatCurrency(item.amount, item.currency)).join(" + ");
 }
 
+const approximateUsdRates = { USD: 1, EUR: 1.08, GBP: 1.27, CAD: 0.73, AUD: 0.66, JPY: 0.0067 };
+
+function estimateUsdRoyalties(markets, fallback = 0) {
+  const values = (markets || []).filter((market) => Number(market.royalties ?? market.revenue ?? 0) !== 0);
+  if (!values.length) return Number(fallback || 0);
+  return values.reduce((total, market) => {
+    const currency = String(market.currency || "USD").toUpperCase();
+    const rate = approximateUsdRates[currency] || 1;
+    return total + Number(market.royalties ?? market.revenue ?? 0) * rate;
+  }, 0);
+}
+
 function campaignChangeSummary(change) {
   if (change?.summary) return change.summary;
   const campaign = change?.campaignName || "Campaign";
@@ -582,8 +594,8 @@ function renderMarketBreakdown(homeData) {
               <span class="market-flag" role="img" aria-label="${escapeHtml(market.name)} flag">${marketFlag(market)}</span>
               <span class="label">${escapeHtml(market.name)}</span>
             </div>
-            <div class="value">${market.units || 0} sold</div>
-            <div class="sub">${formatCurrency(market.royalties ?? market.revenue, market.currency || "USD")} ${escapeHtml(market.currency || "USD")} royalties</div>
+            <div class="market-units">${market.units || 0} sold</div>
+            <div class="market-royalty">${formatCurrency(market.royalties ?? market.revenue, market.currency || "USD")} ${escapeHtml(market.currency || "USD")} royalties</div>
           </div>
         `).join("") : `<div class="sub empty-state">No marketplace data is available for this period.</div>`}
       </div>
@@ -622,6 +634,7 @@ function renderHome() {
   const summary = homeData.summary?.length ? homeData.summary : fallbackHomeData().summary;
   const briefing = homeData.businessBriefing;
   const reportDate = homeData.reportDate || homeData.latestImport || "Latest import";
+  const estimatedUsdRoyalties = estimateUsdRoyalties(homeData.markets, homeData.royalties);
   const expectedYesterday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
   const isYesterdayBehind = homeData.period === "yesterday"
     && /^\d{4}-\d{2}-\d{2}$/.test(String(homeData.reportDate || ""))
@@ -657,7 +670,7 @@ function renderHome() {
           </div>
           <span class="chip active">${homeData.period === "yesterday" ? "Yesterday" : homeData.period === "last7" ? "7 Days" : homeData.period === "last14" ? "14 Days" : homeData.period === "last30" ? "30 Days" : "Latest"}</span>
         </div>
-        <div class="big-sales">${homeData.sales || 0}</div>
+        <div class="big-sales">${homeData.sales || 0}<div class="big-sales-royalties">≈ ${formatMoney(estimatedUsdRoyalties)} USD estimated royalties</div></div>
         <div class="metric-grid">
           ${moneyCard("Returns", String(homeData.returns || 0))}
           ${moneyCard("Markets with sales", String((homeData.markets || []).filter((market) => Number(market.units || 0) > 0).length))}

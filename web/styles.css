@@ -382,6 +382,8 @@ svg {
   margin: 16px 0 14px;
 }
 
+.big-sales-royalties { margin-top: 10px; color: var(--muted); font-size: 16px; line-height: 1.2; font-weight: 700; }
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -667,6 +669,8 @@ svg {
 .market:nth-child(4n + 2) { background: var(--teal-soft); border-color: #cfe9e2; }
 .market:nth-child(4n + 3) { background: var(--gold-soft); border-color: #ebdfb9; }
 .market:nth-child(4n + 4) { background: var(--coral-soft); border-color: #efd5cc; }
+.market-units { color: var(--ink); font-size: 18px; line-height: 1.2; font-weight: 700; }
+.market-royalty { margin-top: 5px; color: var(--ink); font-size: 15px; line-height: 1.25; font-weight: 800; }
 
 .empty-state {
   grid-column: 1 / -1;
