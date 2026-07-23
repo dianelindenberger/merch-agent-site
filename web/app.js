@@ -1981,9 +1981,22 @@ function render({ preserveScroll = true } = {}) {
   document.querySelectorAll("[data-recommendation-open]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
+      event.stopPropagation();
+      // The app body uses `.content` as its scroll container. Opening a
+      // native dialog can cause Android Chrome to scroll that container to
+      // the dialog's DOM position, so capture and restore it explicitly.
+      const scrollContainer = document.querySelector(".content");
+      const scrollTop = scrollContainer?.scrollTop || 0;
+      const scrollLeft = scrollContainer?.scrollLeft || 0;
       const dialog = button.parentElement?.querySelector("[data-recommendation-dialog]");
       if (dialog && typeof dialog.showModal === "function") dialog.showModal();
       else dialog?.setAttribute("open", "");
+      const restoreScroll = () => {
+        if (!scrollContainer) return;
+        scrollContainer.scrollTo({ left: scrollLeft, top: scrollTop, behavior: "auto" });
+      };
+      restoreScroll();
+      requestAnimationFrame(restoreScroll);
     });
   });
 
