@@ -1363,6 +1363,9 @@ svg {
 .audit-action p { margin: 0; color: var(--ink); font-size: 11px; line-height: 1.45; }
 .ask-audit-button { justify-self: start; min-height: 48px; border: 1px solid #d8dcf7; border-radius: 12px; background: #f4f5ff; color: var(--indigo); padding: 10px 12px; font-size: 11px; font-weight: 850; }
 .recommendation-interaction { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.recommendation-interaction summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 48px; padding: 8px 10px; border-radius: 11px; background: var(--surface-soft); color: var(--indigo); cursor: pointer; list-style-position: inside; font-size: 11px; font-weight: 850; }
+.recommendation-interaction summary strong { color: var(--ink); }
+.recommendation-action-body { display: grid; gap: 8px; }
 .recommendation-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
 .recommendation-status strong { color: var(--ink); }
 .recommendation-status small { color: var(--muted); }

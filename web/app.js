@@ -1396,16 +1396,19 @@ function renderRecommendationActions(type, item) {
   const interaction = state.recommendationInteractions[id];
   const status = interaction?.status || "Proposed";
   return `
-    <div class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
-      <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
-      <div class="recommendation-actions">
+    <details class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
+      <summary><span>Recommendation actions</span><strong>${escapeHtml(status)}</strong></summary>
+      <div class="recommendation-action-body">
+        <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
+        <div class="recommendation-actions">
         <button type="button" class="ask-audit-button" data-recommendation-action="made_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Made Change</button>
         <button type="button" class="ask-audit-button" data-recommendation-action="ignore" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Ignore</button>
         <button type="button" class="ask-audit-button" data-recommendation-action="remind_later" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Remind Me Later</button>
         <button type="button" class="ask-audit-button" data-recommendation-action="discuss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Discuss</button>
+        </div>
+        ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
       </div>
-      ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
-    </div>
+    </details>
   `;
 }
 
