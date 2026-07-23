@@ -1338,6 +1338,8 @@ svg {
 .assistant-thread {
   display: grid;
   gap: 12px;
+  /* Keep the newest answer above the sticky composer and bottom navigation. */
+  padding-bottom: 128px;
 }
 
 .assistant-intro {

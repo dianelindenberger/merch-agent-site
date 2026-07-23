@@ -2579,7 +2579,20 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             matches = search_payload(question, analysis_period)
             found_designs = matches["designs"][:4]
             found_campaigns = matches["campaigns"][:4]
-        if found_campaigns and any(metric in normalized for metric in ("impression", "click", "spend", "cost", "sales", "order", "roas", "acos", "ctr")):
+        if found_campaigns and any(phrase in normalized for phrase in ("ad group", "ad groups", "adgroup")):
+            campaign = found_campaigns[0]
+            detail = campaign_detail_payload(campaign["name"], analysis_period)
+            ad_groups = detail.get("adGroups", [])
+            if ad_groups:
+                group_text = "; ".join(
+                    f"{group['name']} ({group['targetCount']} targets, {group['orders']} orders, {currency_amount_text(group['sales'], campaign.get('currency'))} ad sales)"
+                    for group in ad_groups
+                )
+                answer = f"For {period_label}, the ad groups in {campaign['name']} are: {group_text}."
+            else:
+                answer = f"I found the {campaign['name']} campaign, but there are no ad-group rows in the imported {period_label} target data yet."
+            evidence.append(f"Amazon Ads target report, {period_label}, report ending {campaign.get('reportDate') or 'latest'}")
+        elif found_campaigns and any(metric in normalized for metric in ("impression", "click", "spend", "cost", "sales", "order", "roas", "acos", "ctr")):
             campaign = found_campaigns[0]
             impressions = int(campaign.get("impressions") or 0)
             clicks = int(campaign.get("clicks") or 0)
