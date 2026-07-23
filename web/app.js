@@ -115,6 +115,22 @@ function goBack() {
   }
 }
 
+function navigateToPage(page) {
+  state.page = page;
+  if (state.page === "home") {
+    state.campaignDetailRequest += 1;
+    state.campaignDetailLoading = false;
+    state.selectedCampaign = "";
+    state.campaignDetail = null;
+    state.homeData = null;
+    state.homeLoading = true;
+    render();
+    loadHomeData();
+  } else {
+    render();
+  }
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1602,21 +1618,7 @@ function render() {
   }
 
   document.querySelectorAll("[data-page]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.page = button.dataset.page;
-      if (state.page === "home") {
-        state.campaignDetailRequest += 1;
-        state.campaignDetailLoading = false;
-        state.selectedCampaign = "";
-        state.campaignDetail = null;
-        state.homeData = null;
-        state.homeLoading = true;
-        render();
-        loadHomeData();
-      } else {
-        render();
-      }
-    });
+    button.onclick = () => navigateToPage(button.dataset.page);
   });
 
   document.querySelectorAll("[data-refresh-all]").forEach((button) => {
