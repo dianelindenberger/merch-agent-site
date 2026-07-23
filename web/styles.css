@@ -1242,11 +1242,38 @@ svg {
   pointer-events: none;
 }
 
+.chart-with-axes {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 820px) 58px;
+  align-items: stretch;
+  max-width: 940px;
+  margin: 8px auto 0;
+}
+
+.chart-y-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 20px 5px 31px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.left-axis { text-align: right; }
+.right-axis { text-align: left; }
+
 .chart-tick-label {
   fill: var(--muted);
   font-family: inherit;
   font-size: 8px;
   font-weight: 700;
+}
+
+@media (max-width: 520px) {
+  .chart-with-axes { grid-template-columns: 35px minmax(0, 1fr) 49px; }
+  .chart-y-axis { padding-left: 2px; padding-right: 2px; font-size: 10px; }
 }
 
 .chart-scale-labels {

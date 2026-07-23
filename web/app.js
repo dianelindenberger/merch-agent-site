@@ -774,9 +774,9 @@ function renderComboChart(data) {
   const width = 360;
   const height = 240;
   const top = 22;
-  const right = 38;
+  const right = 8;
   const bottom = 44;
-  const left = 38;
+  const left = 8;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
   const maxSales = Math.max(1, ...points.map((point) => point.sales || 0));
@@ -830,14 +830,16 @@ function renderComboChart(data) {
 
   return `
     <div class="chart-scale-labels"><span>Units sold</span><span>${escapeHtml(royaltyCurrency)} royalties</span></div>
-    <svg class="combo-chart" viewBox="0 0 ${width} ${height - 28}" role="img" aria-label="Sales and ${escapeHtml(royaltyCurrency)} royalties analytics chart">
-      ${grid}
-      ${salesAxis}
-      ${royaltiesAxis}
-      <line x1="${left}" y1="${top + chartHeight}" x2="${width - right}" y2="${top + chartHeight}" stroke="#d8e1e8" stroke-width="1"/>
-      ${barsSvg}
-      ${royaltiesSvg}
-    </svg>
+    <div class="chart-with-axes">
+      <div class="chart-y-axis left-axis"><span>${maxSales.toLocaleString()}</span><span>0</span></div>
+      <svg class="combo-chart" viewBox="0 0 ${width} ${height - 28}" role="img" aria-label="Sales and ${escapeHtml(royaltyCurrency)} royalties analytics chart">
+        ${grid}
+        <line x1="${left}" y1="${top + chartHeight}" x2="${width - right}" y2="${top + chartHeight}" stroke="#d8e1e8" stroke-width="1"/>
+        ${barsSvg}
+        ${royaltiesSvg}
+      </svg>
+      <div class="chart-y-axis right-axis"><span>${formatCurrency(maxRoyalties, royaltyCurrency)}</span><span>${formatCurrency(0, royaltyCurrency)}</span></div>
+    </div>
     <div class="chart-axis-labels" style="grid-template-columns: repeat(${labelIndexes.length}, minmax(0, 1fr));">
       ${labelIndexes.map((index) => `<span>${escapeHtml(formatShortDate(points[index].date))}</span>`).join("")}
     </div>
@@ -1965,22 +1967,6 @@ function render({ preserveScroll = false } = {}) {
     button.onclick = () => handleRecommendationAction(button);
   });
 
-  document.querySelectorAll("[data-recommendation-toggle]").forEach((button) => {
-    button.onclick = () => {
-      const id = button.dataset.recommendationToggle;
-      const actionBody = button.parentElement?.querySelector(".recommendation-action-body");
-      const willOpen = actionBody?.hidden;
-      if (willOpen) {
-        actionBody.hidden = false;
-        state.openRecommendationIds.add(id);
-      } else {
-        actionBody.hidden = true;
-        state.openRecommendationIds.delete(id);
-      }
-      button.setAttribute("aria-expanded", willOpen ? "true" : "false");
-    };
-  });
-
   const clearRecommendation = document.querySelector("[data-clear-recommendation]");
   if (clearRecommendation) {
     clearRecommendation.onclick = () => {
@@ -2056,6 +2042,19 @@ function render({ preserveScroll = false } = {}) {
     });
   }
 }
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-recommendation-toggle]");
+  if (!button) return;
+  const id = button.dataset.recommendationToggle;
+  const actionBody = button.parentElement?.querySelector(".recommendation-action-body");
+  if (!actionBody) return;
+  const willOpen = actionBody.hidden;
+  actionBody.hidden = !willOpen;
+  if (willOpen) state.openRecommendationIds.add(id);
+  else state.openRecommendationIds.delete(id);
+  button.setAttribute("aria-expanded", willOpen ? "true" : "false");
+});
 
 render();
 loadHomeData();
