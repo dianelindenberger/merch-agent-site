@@ -1242,6 +1242,13 @@ svg {
   pointer-events: none;
 }
 
+.chart-tick-label {
+  fill: var(--muted);
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 700;
+}
+
 .chart-scale-labels {
   display: flex;
   justify-content: space-between;

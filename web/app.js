@@ -759,9 +759,9 @@ function renderComboChart(data) {
   const width = 360;
   const height = 240;
   const top = 22;
-  const right = 20;
+  const right = 38;
   const bottom = 44;
-  const left = 34;
+  const left = 38;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
   const maxSales = Math.max(1, ...points.map((point) => point.sales || 0));
@@ -778,6 +778,16 @@ function renderComboChart(data) {
     const y = top + chartHeight - ratio * chartHeight;
     return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="#e8eef3" stroke-width="1"/>`;
   }).join("");
+  const scaleRatios = [0, 0.25, 0.5, 0.75, 1];
+  const royaltySymbol = { USD: "$", EUR: "€", GBP: "£", JPY: "¥" }[royaltyCurrency] || `${royaltyCurrency} `;
+  const salesAxis = state.analyticsShowSales ? scaleRatios.map((ratio) => {
+    const y = top + chartHeight - ratio * chartHeight;
+    return `<text x="${left - 6}" y="${y + 3}" text-anchor="end" class="chart-tick-label">${Math.round(maxSales * ratio).toLocaleString()}</text>`;
+  }).join("") : "";
+  const royaltiesAxis = state.analyticsShowRoyalties ? scaleRatios.map((ratio) => {
+    const y = top + chartHeight - ratio * chartHeight;
+    return `<text x="${width - right + 6}" y="${y + 3}" text-anchor="start" class="chart-tick-label">${royaltySymbol}${Math.round(maxRoyalties * ratio).toLocaleString()}</text>`;
+  }).join("") : "";
 
   const barsSvg = state.analyticsShowSales
     ? points.map((point, index) => {
@@ -807,6 +817,8 @@ function renderComboChart(data) {
     <div class="chart-scale-labels"><span>Units sold</span><span>${escapeHtml(royaltyCurrency)} royalties</span></div>
     <svg class="combo-chart" viewBox="0 0 ${width} ${height - 28}" role="img" aria-label="Sales and ${escapeHtml(royaltyCurrency)} royalties analytics chart">
       ${grid}
+      ${salesAxis}
+      ${royaltiesAxis}
       <line x1="${left}" y1="${top + chartHeight}" x2="${width - right}" y2="${top + chartHeight}" stroke="#d8e1e8" stroke-width="1"/>
       ${barsSvg}
       ${royaltiesSvg}
@@ -1431,8 +1443,7 @@ function renderRecommendationActions(type, item) {
       <button type="button" class="recommendation-action-toggle" data-recommendation-toggle="${escapeHtml(id)}" aria-expanded="${isOpen ? "true" : "false"}">
         <span>Recommendation actions</span><strong>${escapeHtml(status)}</strong>
       </button>
-      ${isOpen ? `
-      <div class="recommendation-action-body">
+      <div class="recommendation-action-body"${isOpen ? "" : " hidden"}>
         <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
         <div class="recommendation-actions">
         <button type="button" class="ask-audit-button" data-recommendation-action="made_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Made Change</button>
@@ -1442,7 +1453,6 @@ function renderRecommendationActions(type, item) {
         </div>
         ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
       </div>
-      ` : ""}
     </div>
   `;
 }
@@ -1943,12 +1953,16 @@ function render({ preserveScroll = false } = {}) {
   document.querySelectorAll("[data-recommendation-toggle]").forEach((button) => {
     button.onclick = () => {
       const id = button.dataset.recommendationToggle;
-      if (state.openRecommendationIds.has(id)) {
-        state.openRecommendationIds.delete(id);
-      } else {
+      const actionBody = button.parentElement?.querySelector(".recommendation-action-body");
+      const willOpen = actionBody?.hidden;
+      if (willOpen) {
+        actionBody.hidden = false;
         state.openRecommendationIds.add(id);
+      } else {
+        actionBody.hidden = true;
+        state.openRecommendationIds.delete(id);
       }
-      render({ preserveScroll: true });
+      button.setAttribute("aria-expanded", willOpen ? "true" : "false");
     };
   });
 

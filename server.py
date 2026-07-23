@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 SALES_SYNC_LOCK = threading.Lock()
 HOSTED_REFRESH_LOCK = threading.Lock()
+HOSTED_REFRESH_STATUS_LOCK = threading.Lock()
 HOSTED_REFRESH_STATUS = {
     "running": False,
     "label": "",
@@ -36,7 +37,8 @@ if str(SRC_DIR) not in sys.path:
 
 from report_utils import file_hash, normalize_columns, read_report  # noqa: E402
 from daily_audit import build_daily_audit  # noqa: E402
-from database import DATA_DIR, DB_PATH  # noqa: E402
+from database import DATA_DIR, DB_PATH, setup_database  # noqa: E402
+from reporting_day import amazon_reporting_date  # noqa: E402
 
 INCOMING_REPORTS = Path(os.getenv("MERCH_AGENT_REPORTS_DIR", DATA_DIR / "incoming_reports")).expanduser().resolve()
 AUTH_USERNAME = os.getenv("MERCH_AGENT_USERNAME", "").strip()
@@ -594,7 +596,7 @@ def daily_refresh_scheduler():
 
 
 def refresh_status_payload():
-    with HOSTED_REFRESH_LOCK:
+    with HOSTED_REFRESH_STATUS_LOCK:
         return dict(HOSTED_REFRESH_STATUS)
 
 
@@ -603,14 +605,15 @@ def run_hosted_refresh(label, script):
         print(f"Hosted {label} skipped because another refresh is running.", flush=True)
         return False
     try:
-        HOSTED_REFRESH_STATUS.update({
-            "running": True,
-            "label": label,
-            "startedAt": datetime.now(EASTERN_TIME).isoformat(),
-            "finishedAt": "",
-            "exitCode": None,
-            "error": "",
-        })
+        with HOSTED_REFRESH_STATUS_LOCK:
+            HOSTED_REFRESH_STATUS.update({
+                "running": True,
+                "label": label,
+                "startedAt": datetime.now(EASTERN_TIME).isoformat(),
+                "finishedAt": "",
+                "exitCode": None,
+                "error": "",
+            })
         try:
             result = subprocess.run(
                 [sys.executable, str(PROJECT_ROOT / "tools" / script)],
@@ -619,19 +622,21 @@ def run_hosted_refresh(label, script):
                 timeout=3600,
                 check=False,
             )
-            HOSTED_REFRESH_STATUS.update({
-                "running": False,
-                "finishedAt": datetime.now(EASTERN_TIME).isoformat(),
-                "exitCode": result.returncode,
-            })
+            with HOSTED_REFRESH_STATUS_LOCK:
+                HOSTED_REFRESH_STATUS.update({
+                    "running": False,
+                    "finishedAt": datetime.now(EASTERN_TIME).isoformat(),
+                    "exitCode": result.returncode,
+                })
             print(f"Hosted {label} finished with exit code {result.returncode}.", flush=True)
         except Exception as exc:
-            HOSTED_REFRESH_STATUS.update({
-                "running": False,
-                "finishedAt": datetime.now(EASTERN_TIME).isoformat(),
-                "exitCode": -1,
-                "error": str(exc),
-            })
+            with HOSTED_REFRESH_STATUS_LOCK:
+                HOSTED_REFRESH_STATUS.update({
+                    "running": False,
+                    "finishedAt": datetime.now(EASTERN_TIME).isoformat(),
+                    "exitCode": -1,
+                    "error": str(exc),
+                })
             print(f"Hosted {label} failed: {exc}", file=sys.stderr, flush=True)
     finally:
         HOSTED_REFRESH_LOCK.release()
@@ -639,7 +644,7 @@ def run_hosted_refresh(label, script):
 
 
 def start_hosted_ads_refresh_now():
-    with HOSTED_REFRESH_LOCK:
+    with HOSTED_REFRESH_STATUS_LOCK:
         if HOSTED_REFRESH_STATUS.get("running"):
             return {"ok": False, "running": True, "status": dict(HOSTED_REFRESH_STATUS)}
     thread = threading.Thread(
@@ -892,7 +897,7 @@ def ads_payload(period, custom_start="", custom_end=""):
     if not DB_PATH.exists():
         return {"source": "missing_database", "period": period, "metrics": {}, "topProducts": []}
 
-    today = date.today()
+    today = amazon_reporting_date()
     ranges = {
         "today": (today, today),
         "yesterday": (today - timedelta(days=1), today - timedelta(days=1)),
@@ -1655,6 +1660,7 @@ def campaigns_payload(period="last30", search=""):
             campaign_name,
             COALESCE(country, '') AS country,
             COALESCE(currency, '') AS currency,
+            SUM(COALESCE(impressions, 0)) AS impressions,
             SUM(spend) AS spend,
             SUM(clicks) AS clicks,
             SUM(orders) AS orders,
@@ -1682,6 +1688,7 @@ def campaigns_payload(period="last30", search=""):
             "name": row["campaign_name"],
             "country": row["country"],
             "currency": row["currency"],
+            "impressions": int(row["impressions"] or 0),
             "spend": spend,
             "clicks": clicks,
             "orders": orders,
@@ -2720,6 +2727,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    setup_database()
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8788"))
     server = ThreadingHTTPServer((host, port), MerchAgentHandler)
