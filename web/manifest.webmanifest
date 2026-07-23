@@ -1,0 +1,20 @@
+{
+  "name": "Merch Agent",
+  "short_name": "Merch Agent",
+  "description": "Daily sales, royalty, advertising, and recommendation analysis for Merch on Demand.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#eef7ff",
+  "theme_color": "#eef7ff",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

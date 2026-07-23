@@ -57,6 +57,14 @@ const state = {
   activeRecommendation: null,
 };
 
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // The app remains fully usable online if a browser does not support service workers.
+    });
+  });
+}
+
 const sampleProducts = [
   { title: "Hold Your Horses Funny Meme", market: "USA", price: "$21.99", royalty: "$5.14", age: "2h ago", thumb: "H", color: "brown" },
   { title: "Bleghssed Death Metal Shirt", market: "USA", price: "$21.99", royalty: "$4.92", age: "3h ago", thumb: "B", color: "black" },
