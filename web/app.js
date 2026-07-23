@@ -1458,13 +1458,14 @@ function renderRecommendationActions(type, item) {
   const id = recommendationId(type, item);
   const interaction = state.recommendationInteractions[id];
   const status = interaction?.status || "Proposed";
-  const isOpen = state.openRecommendationIds.has(id);
   return `
-    <details class="recommendation-interaction" data-recommendation-details="${escapeHtml(id)}"${isOpen ? " open" : ""}>
-      <summary class="recommendation-action-toggle">
+    <div class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
+      <button type="button" class="recommendation-action-toggle" data-recommendation-open aria-haspopup="dialog">
         <span>Recommendation actions</span><strong>${escapeHtml(status)}</strong>
-      </summary>
-      <div class="recommendation-action-body">
+      </button>
+      <dialog class="recommendation-dialog" data-recommendation-dialog>
+        <div class="recommendation-dialog-head"><strong>Recommendation actions</strong><button type="button" class="recommendation-dialog-close" data-recommendation-dialog-close aria-label="Close actions">×</button></div>
+        <div class="recommendation-action-body">
         <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
         <div class="recommendation-actions">
         <button type="button" class="ask-audit-button" data-recommendation-action="made_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Made Change</button>
@@ -1473,8 +1474,9 @@ function renderRecommendationActions(type, item) {
         <button type="button" class="ask-audit-button" data-recommendation-action="discuss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Discuss</button>
         </div>
         ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
-      </div>
-    </details>
+        </div>
+      </dialog>
+    </div>
   `;
 }
 
@@ -1506,6 +1508,7 @@ async function handleRecommendationAction(button) {
   if (!item) return;
   const context = recommendationContext(type, item);
   if (action === "discuss") {
+    button.closest(".recommendation-dialog")?.close();
     state.activeRecommendation = { recommendationId: id, context };
     state.aiMode = "ask";
     navigateToPage("ai");
@@ -1975,12 +1978,17 @@ function render({ preserveScroll = true } = {}) {
     button.onclick = () => handleRecommendationAction(button);
   });
 
-  document.querySelectorAll("[data-recommendation-details]").forEach((details) => {
-    details.addEventListener("toggle", () => {
-      const id = details.dataset.recommendationDetails;
-      if (details.open) state.openRecommendationIds.add(id);
-      else state.openRecommendationIds.delete(id);
+  document.querySelectorAll("[data-recommendation-open]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const dialog = button.parentElement?.querySelector("[data-recommendation-dialog]");
+      if (dialog && typeof dialog.showModal === "function") dialog.showModal();
+      else dialog?.setAttribute("open", "");
     });
+  });
+
+  document.querySelectorAll("[data-recommendation-dialog-close]").forEach((button) => {
+    button.addEventListener("click", () => button.closest("dialog")?.close());
   });
 
   const clearRecommendation = document.querySelector("[data-clear-recommendation]");

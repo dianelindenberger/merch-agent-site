@@ -1418,10 +1418,12 @@ svg {
 .audit-action p { margin: 0; color: var(--ink); font-size: 11px; line-height: 1.45; }
 .ask-audit-button { justify-self: start; min-height: 48px; border: 1px solid #d8dcf7; border-radius: 12px; background: #f4f5ff; color: var(--indigo); padding: 10px 12px; font-size: 11px; font-weight: 850; }
 .recommendation-interaction { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
-.recommendation-action-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 48px; border: 0; padding: 8px 10px; border-radius: 11px; background: var(--surface-soft); color: var(--indigo); cursor: pointer; font: inherit; font-size: 11px; font-weight: 850; text-align: left; list-style: none; }
-.recommendation-action-toggle::-webkit-details-marker { display: none; }
-.recommendation-action-toggle::marker { content: ""; }
+.recommendation-action-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 48px; border: 0; padding: 8px 10px; border-radius: 11px; background: var(--surface-soft); color: var(--indigo); cursor: pointer; font: inherit; font-size: 11px; font-weight: 850; text-align: left; }
 .recommendation-action-toggle strong { color: var(--ink); }
+.recommendation-dialog { width: min(420px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: min(80vh, 560px); margin: auto; padding: 18px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface); color: var(--ink); box-shadow: 0 20px 70px rgba(35, 55, 75, 0.28); }
+.recommendation-dialog::backdrop { background: rgba(31, 43, 55, 0.36); }
+.recommendation-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; color: var(--ink); font-size: 14px; }
+.recommendation-dialog-close { flex: 0 0 48px; width: 48px; min-height: 48px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); color: var(--muted); font-size: 24px; line-height: 1; }
 .recommendation-action-body { display: grid; gap: 8px; }
 .recommendation-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
 .recommendation-status strong { color: var(--ink); }
