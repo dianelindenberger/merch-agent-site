@@ -123,7 +123,7 @@ function goBack() {
     state.selectedAdGroup = "";
     state.campaignDetail = null;
     state.campaignDetailError = "";
-    render();
+    render({ preserveScroll: false });
     return;
   }
 
@@ -131,7 +131,7 @@ function goBack() {
     state.page = "home";
     state.homeData = null;
     state.homeLoading = true;
-    render();
+    render({ preserveScroll: false });
     loadHomeData();
   }
 }
@@ -145,10 +145,10 @@ function navigateToPage(page) {
     state.campaignDetail = null;
     state.homeData = null;
     state.homeLoading = true;
-    render();
+    render({ preserveScroll: false });
     loadHomeData();
   } else {
-    render();
+    render({ preserveScroll: false });
   }
 }
 
@@ -1789,7 +1789,7 @@ function renderMore() {
   `;
 }
 
-function render({ preserveScroll = false } = {}) {
+function render({ preserveScroll = true } = {}) {
   const [title, kicker] = pageMeta[state.page];
   document.querySelector(".phone").dataset.page = state.page;
   document.querySelector("#page-title").textContent = title;
@@ -1808,6 +1808,8 @@ function render({ preserveScroll = false } = {}) {
 
   const content = document.querySelector("#app-content");
   const previousScrollTop = content.scrollTop;
+  const activeAiInput = document.activeElement?.matches("[data-ai-input]");
+  const activeAiSelection = activeAiInput ? document.activeElement.selectionStart : null;
   const pages = { home: renderHome, ads: renderAds, analytics: renderAnalytics, ai: renderAI, more: renderMore };
   content.innerHTML = pages[state.page]();
   if (state.page === "ai" && state.aiMode === "log" && state.logScrollToBottom) {
@@ -2066,6 +2068,15 @@ function render({ preserveScroll = false } = {}) {
   if (state.aiFocusComposer && state.page === "ai" && state.aiMode === "ask") {
     state.aiFocusComposer = false;
     requestAnimationFrame(() => document.querySelector("[data-ai-input]")?.focus());
+  }
+  if (activeAiInput) {
+    const nextAiInput = document.querySelector("[data-ai-input]");
+    if (nextAiInput) {
+      nextAiInput.focus();
+      if (typeof activeAiSelection === "number" && nextAiInput.setSelectionRange) {
+        nextAiInput.setSelectionRange(activeAiSelection, activeAiSelection);
+      }
+    }
   }
 }
 
