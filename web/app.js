@@ -1337,6 +1337,7 @@ function renderAssistantText(text) {
   const lines = String(text || "").split(/\r?\n/);
   let html = '<div class="assistant-answer-text">';
   let listOpen = false;
+  const renderInline = (value) => escapeHtml(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   for (const line of lines) {
     const trimmed = line.trim();
     const isBullet = trimmed.startsWith("•") || trimmed.startsWith("- ");
@@ -1345,17 +1346,20 @@ function renderAssistantText(text) {
         html += '<ul class="assistant-answer-list">';
         listOpen = true;
       }
-      html += `<li>${escapeHtml(trimmed.replace(/^(•|-)\s*/, ""))}</li>`;
+      html += `<li>${renderInline(trimmed.replace(/^(•|-)\s*/, ""))}</li>`;
     } else {
       if (listOpen) {
         html += "</ul>";
         listOpen = false;
       }
-      const normalizedHeading = trimmed.replace(/:$/, "");
+      const normalizedHeading = trimmed
+        .replace(/^#{1,6}\s*/, "")
+        .replace(/^\*\*(.+)\*\*$/, "$1")
+        .replace(/:$/, "");
       const isHeading = ["Verified facts", "Calculation", "Calculations", "Recommendation", "Recommendations", "Inference", "Inferences", "Unavailable data"].includes(normalizedHeading);
       if (trimmed) html += isHeading
-        ? `<strong class="assistant-answer-heading">${escapeHtml(trimmed)}</strong>`
-        : `<p>${escapeHtml(trimmed)}</p>`;
+        ? `<strong class="assistant-answer-heading">${escapeHtml(normalizedHeading)}</strong>`
+        : `<p>${renderInline(trimmed)}</p>`;
     }
   }
   if (listOpen) html += "</ul>";
