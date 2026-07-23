@@ -2579,16 +2579,35 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             matches = search_payload(question, analysis_period)
             found_designs = matches["designs"][:4]
             found_campaigns = matches["campaigns"][:4]
-        if found_campaigns and any(phrase in normalized for phrase in ("ad group", "ad groups", "adgroup")):
+        if any(phrase in normalized for phrase in ("roas for the campaigns", "campaign roas", "roas of the campaigns")) and not found_campaigns:
+            referenced_campaigns = sorted(
+                campaigns_last7,
+                key=lambda item: (item.get("sales", 0), item.get("orders", 0), -item.get("spend", 0)),
+                reverse=True,
+            )[:5]
+            if referenced_campaigns:
+                answer = "For " + period_label + ", the campaigns most recently referenced are: " + "; ".join(
+                    f"{item['name']} ({item['roas']:.2f} ROAS, {item['orders']} orders, {currency_amount_text(item['sales'], item.get('currency'))} ad sales)"
+                    for item in referenced_campaigns
+                ) + "."
+                evidence.append(f"Amazon Ads, {period_label}, report ending {referenced_campaigns[0].get('reportDate') or 'latest'}")
+            else:
+                answer = f"I do not have campaign rows for {period_label} yet, so I cannot calculate ROAS."
+        elif found_campaigns and any(phrase in normalized for phrase in ("ad group", "ad groups", "adgroup")):
             campaign = found_campaigns[0]
             detail = campaign_detail_payload(campaign["name"], analysis_period)
             ad_groups = detail.get("adGroups", [])
             if ad_groups:
-                group_text = "; ".join(
-                    f"{group['name']} ({group['targetCount']} targets, {group['orders']} orders, {currency_amount_text(group['sales'], campaign.get('currency'))} ad sales)"
-                    for group in ad_groups
-                )
-                answer = f"For {period_label}, the ad groups in {campaign['name']} are: {group_text}."
+                wants_counts = any(word in normalized for word in ("unit", "order", "purchase", "count", "how many"))
+                if wants_counts and any(phrase in normalized for phrase in ("not dollar", "no dollar", "instead of dollar", "rather than dollar")):
+                    group_text = "; ".join(f"{group['name']}: {group['orders']} purchases across {group['targetCount']} targets" for group in ad_groups)
+                    answer = f"For {period_label}, {campaign['name']} has these ad-group purchase counts: {group_text}. Amazon Ads reports purchases/orders here, not Merch royalty units."
+                else:
+                    group_text = "; ".join(
+                        f"{group['name']} ({group['targetCount']} targets, {group['orders']} orders, {currency_amount_text(group['sales'], campaign.get('currency'))} ad sales)"
+                        for group in ad_groups
+                    )
+                    answer = f"For {period_label}, the ad groups in {campaign['name']} are: {group_text}."
             else:
                 answer = f"I found the {campaign['name']} campaign, but there are no ad-group rows in the imported {period_label} target data yet."
             evidence.append(f"Amazon Ads target report, {period_label}, report ending {campaign.get('reportDate') or 'latest'}")
