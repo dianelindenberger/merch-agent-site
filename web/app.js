@@ -54,6 +54,7 @@ const state = {
   salesUploadError: "",
   salesStatus: null,
   recommendationInteractions: {},
+  openRecommendationIds: new Set(),
   activeRecommendation: null,
 };
 
@@ -1424,9 +1425,13 @@ function renderRecommendationActions(type, item) {
   const id = recommendationId(type, item);
   const interaction = state.recommendationInteractions[id];
   const status = interaction?.status || "Proposed";
+  const isOpen = state.openRecommendationIds.has(id);
   return `
-    <details class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
-      <summary><span>Recommendation actions</span><strong>${escapeHtml(status)}</strong></summary>
+    <div class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
+      <button type="button" class="recommendation-action-toggle" data-recommendation-toggle="${escapeHtml(id)}" aria-expanded="${isOpen ? "true" : "false"}">
+        <span>Recommendation actions</span><strong>${escapeHtml(status)}</strong>
+      </button>
+      ${isOpen ? `
       <div class="recommendation-action-body">
         <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
         <div class="recommendation-actions">
@@ -1437,7 +1442,8 @@ function renderRecommendationActions(type, item) {
         </div>
         ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
       </div>
-    </details>
+      ` : ""}
+    </div>
   `;
 }
 
@@ -1750,7 +1756,7 @@ function renderMore() {
   `;
 }
 
-function render() {
+function render({ preserveScroll = false } = {}) {
   const [title, kicker] = pageMeta[state.page];
   document.querySelector(".phone").dataset.page = state.page;
   document.querySelector("#page-title").textContent = title;
@@ -1768,6 +1774,7 @@ function render() {
   });
 
   const content = document.querySelector("#app-content");
+  const previousScrollTop = content.scrollTop;
   const pages = { home: renderHome, ads: renderAds, analytics: renderAnalytics, ai: renderAI, more: renderMore };
   content.innerHTML = pages[state.page]();
   if (state.page === "ai" && state.aiMode === "log" && state.logScrollToBottom) {
@@ -1777,6 +1784,8 @@ function render() {
   } else if (state.page === "ai" && state.aiScrollToBottom) {
     content.scrollTop = content.scrollHeight;
     state.aiScrollToBottom = false;
+  } else if (preserveScroll) {
+    content.scrollTop = previousScrollTop;
   } else {
     content.scrollTop = 0;
   }
@@ -1929,6 +1938,18 @@ function render() {
 
   document.querySelectorAll("[data-recommendation-action]").forEach((button) => {
     button.onclick = () => handleRecommendationAction(button);
+  });
+
+  document.querySelectorAll("[data-recommendation-toggle]").forEach((button) => {
+    button.onclick = () => {
+      const id = button.dataset.recommendationToggle;
+      if (state.openRecommendationIds.has(id)) {
+        state.openRecommendationIds.delete(id);
+      } else {
+        state.openRecommendationIds.add(id);
+      }
+      render({ preserveScroll: true });
+    };
   });
 
   const clearRecommendation = document.querySelector("[data-clear-recommendation]");
