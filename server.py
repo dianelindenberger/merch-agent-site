@@ -2312,6 +2312,8 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
         "last60": "last60",
         "7 days": "last7",
         "7 day": "last7",
+        "last week": "last7",
+        "this week": "last7",
         "14 days": "last14",
         "14 day": "last14",
         "two weeks": "last14",
@@ -2577,7 +2579,19 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             matches = search_payload(question, analysis_period)
             found_designs = matches["designs"][:4]
             found_campaigns = matches["campaigns"][:4]
-        if found_campaigns and any(word in normalized for word in ("why", "weak", "wrong", "happening", "explain")):
+        if found_campaigns and any(metric in normalized for metric in ("impression", "click", "spend", "cost", "sales", "order", "roas", "acos", "ctr")):
+            campaign = found_campaigns[0]
+            impressions = int(campaign.get("impressions") or 0)
+            clicks = int(campaign.get("clicks") or 0)
+            ctr = clicks / impressions * 100 if impressions else 0
+            answer = (
+                f"For {period_label}, {campaign['name']} had {impressions:,} impressions and {clicks:,} clicks "
+                f"({ctr:.2f}% CTR), spent {currency_amount_text(campaign['spend'], campaign.get('currency'))}, "
+                f"generated {currency_amount_text(campaign['sales'], campaign.get('currency'))} in ad sales, "
+                f"and produced {campaign['orders']} orders at {campaign['roas']:.2f} ROAS."
+            )
+            evidence.append(f"Amazon Ads, {period_label}, report ending {campaign.get('reportDate') or 'latest'}")
+        elif found_campaigns and any(word in normalized for word in ("why", "weak", "wrong", "happening", "explain")):
             campaign = found_campaigns[0]
             detail = campaign_detail_payload(campaign["name"], analysis_period)
             targets = sorted(detail.get("targets", []), key=lambda item: (item.get("orders", 0), item.get("roas", 0), -item.get("spend", 0)))
