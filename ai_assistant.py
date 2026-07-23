@@ -559,8 +559,16 @@ def _answer_classifications(answer: str) -> list[str]:
     }
     found = []
     for line in str(answer or "").splitlines():
-        normalized = line.strip().lower().rstrip(":")
-        classification = labels.get(normalized)
-        if classification and classification not in found:
-            found.append(classification)
+        normalized = line.strip().lower()
+        # Responses commonly render the required labels as Markdown headings
+        # or bold text. Treat only an exact label (or a label followed by a
+        # colon) as a classification while ignoring presentation markers.
+        normalized = normalized.lstrip("#>-• ").strip()
+        normalized = normalized.replace("**", "").replace("__", "").replace("`", "")
+        normalized = normalized.strip("*_ ").strip()
+        for label, classification in labels.items():
+            if normalized == label or normalized.startswith(f"{label}:"):
+                if classification not in found:
+                    found.append(classification)
+                break
     return found
