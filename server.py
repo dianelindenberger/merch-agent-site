@@ -60,6 +60,89 @@ MARKET_NAMES = {
 
 SALES_REPORT_COLUMNS = {"Title", "Purchased", "Royalties", "Revenue", "Date"}
 SALES_REPORT_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+RECOMMENDATION_ACTIONS = {"made_change", "ignore", "remind_later", "discuss"}
+RECOMMENDATION_STATUSES = {"Proposed", "Completed", "Deferred", "Ignored"}
+
+
+def ensure_recommendation_interactions_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recommendation_interactions (
+            recommendation_id TEXT PRIMARY KEY,
+            recommendation_type TEXT NOT NULL,
+            recommendation_context TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Proposed',
+            last_action TEXT NOT NULL,
+            reason TEXT,
+            reminder_at TEXT,
+            acted_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+
+
+def recommendation_interactions_payload():
+    conn = connect()
+    ensure_recommendation_interactions_table(conn)
+    rows = conn.execute(
+        "SELECT recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at FROM recommendation_interactions"
+    ).fetchall()
+    conn.close()
+    return {
+        "interactions": {
+            row["recommendation_id"]: {
+                "recommendationId": row["recommendation_id"],
+                "recommendationType": row["recommendation_type"],
+                "context": json.loads(row["recommendation_context"] or "{}"),
+                "status": row["status"],
+                "lastAction": row["last_action"],
+                "reason": row["reason"] or "",
+                "reminderAt": row["reminder_at"] or "",
+                "actedAt": row["acted_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        }
+    }
+
+
+def save_recommendation_interaction(payload):
+    recommendation_id = str(payload.get("recommendationId", "")).strip()
+    recommendation_type = str(payload.get("recommendationType", "")).strip()[:80]
+    action = str(payload.get("action", "")).strip()
+    status = str(payload.get("status", "Proposed")).strip()
+    if not recommendation_id or not recommendation_type or action not in RECOMMENDATION_ACTIONS:
+        return {"ok": False, "error": "A valid recommendation and action are required."}
+    if status not in RECOMMENDATION_STATUSES:
+        return {"ok": False, "error": "Invalid recommendation status."}
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    now = datetime.now(EASTERN_TIME).isoformat()
+    reason = str(payload.get("reason", "")).strip()[:2000]
+    reminder_at = str(payload.get("reminderAt", "")).strip()[:80]
+    conn = connect()
+    ensure_recommendation_interactions_table(conn)
+    conn.execute(
+        """
+        INSERT INTO recommendation_interactions
+        (recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(recommendation_id) DO UPDATE SET
+          recommendation_type=excluded.recommendation_type,
+          recommendation_context=excluded.recommendation_context,
+          status=excluded.status,
+          last_action=excluded.last_action,
+          reason=excluded.reason,
+          reminder_at=excluded.reminder_at,
+          acted_at=excluded.acted_at,
+          updated_at=excluded.updated_at
+        """,
+        (recommendation_id, recommendation_type, json.dumps(context), status, action, reason, reminder_at, now, now),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "recommendationId": recommendation_id, "status": status, "lastAction": action, "actedAt": now, "reminderAt": reminder_at, "reason": reason}
 
 
 def ensure_sales_import_runs_table(conn):
@@ -2015,9 +2098,16 @@ def change_options_payload():
     }
 
 
-def assistant_payload(question, history=None, requested_period="last7"):
+def assistant_payload(question, history=None, requested_period="last7", recommendation_context=None):
     question = (question or "").strip()
     contextual_question = question
+    if isinstance(recommendation_context, dict) and recommendation_context:
+        contextual_question = (
+            "Recommendation context (use this as the subject of the conversation): "
+            + json.dumps(recommendation_context, ensure_ascii=False)
+            + "\nUser question: "
+            + question
+        )
     normalized = question.lower()
     history = history if isinstance(history, list) else []
     if len(normalized.split()) <= 5 and history:
@@ -2401,6 +2491,10 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             self.send_json(sales_status_payload())
             return
 
+        if parsed.path == "/api/recommendation-interactions":
+            self.send_json(recommendation_interactions_payload())
+            return
+
         if parsed.path == "/api/home":
             query = parse_qs(parsed.query)
             period = query.get("period", ["yesterday"])[0]
@@ -2480,7 +2574,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        allowed_paths = {"/api/assistant", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales"}
+        allowed_paths = {"/api/assistant", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales", "/api/recommendation-interaction"}
         if parsed.path not in allowed_paths:
             self.send_json({"error": "Not found"}, 404)
             return
@@ -2528,6 +2622,9 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             elif parsed.path == "/api/imports/merch-sales":
                 result = import_merch_sales_payload(payload)
                 self.send_json(result, 200 if result.get("ok") else 400)
+            elif parsed.path == "/api/recommendation-interaction":
+                result = save_recommendation_interaction(payload)
+                self.send_json(result, 200 if result.get("ok") else 400)
             elif parsed.path == "/api/refresh-ads-now":
                 result = start_hosted_ads_refresh_now()
                 self.send_json(result, 202 if result.get("ok") else 409)
@@ -2536,6 +2633,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
                     payload.get("question", ""),
                     payload.get("history", []),
                     payload.get("period", "last7"),
+                    payload.get("recommendationContext"),
                 ))
         except (ValueError, json.JSONDecodeError):
             self.send_json({"error": "Invalid request"}, 400)

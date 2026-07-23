@@ -53,6 +53,8 @@ const state = {
   salesUploadMessage: "",
   salesUploadError: "",
   salesStatus: null,
+  recommendationInteractions: {},
+  activeRecommendation: null,
 };
 
 const sampleProducts = [
@@ -264,6 +266,17 @@ async function loadSalesStatus() {
   if (state.page === "more") render();
 }
 
+async function loadRecommendationInteractions() {
+  try {
+    const response = await fetch("/api/recommendation-interactions", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.recommendationInteractions = (await response.json()).interactions || {};
+  } catch (error) {
+    state.recommendationInteractions = {};
+  }
+  if (state.page === "ai") render();
+}
+
 async function loadAdsData() {
   try {
     const params = new URLSearchParams({ period: state.adsPeriod });
@@ -373,6 +386,7 @@ async function askAssistant(question) {
         question: cleanQuestion,
         period: state.homePeriod,
         history: state.aiMessages.slice(-8).map(({ role, text }) => ({ role, text })),
+        recommendationContext: state.activeRecommendation?.context || null,
       }),
     });
 
@@ -1268,6 +1282,13 @@ function renderAskAssistant() {
 
   return `
     <div class="stack assistant-workspace">
+      ${state.activeRecommendation ? `
+        <section class="card recommendation-context-card">
+          <div class="row"><h2 class="section-title">Discussing recommendation</h2><button type="button" class="ask-audit-button" data-clear-recommendation>Close context</button></div>
+          <div class="sub">${escapeHtml(state.activeRecommendation.context.campaignName || state.activeRecommendation.context.title || state.activeRecommendation.context.target || "Recommendation")}</div>
+          <div class="sub">${escapeHtml(state.activeRecommendation.context.action || "")}</div>
+        </section>
+      ` : ""}
       <div class="chip-row assistant-suggestions">
         ${suggestions.map((label) => `<button type="button" class="chip" data-ai-suggestion="${escapeHtml(label)}">${escapeHtml(label)}</button>`).join("")}
       </div>
@@ -1345,6 +1366,112 @@ function auditPeriodLabel(period) {
   return period || "latest";
 }
 
+function recommendationContext(type, item) {
+  return {
+    recommendationType: type,
+    campaignName: item.campaignName || "",
+    target: item.target || item.searchTerm || item.title || "",
+    action: item.action || item.pattern || "",
+    currentBid: item.currentBid ?? null,
+    suggestedBid: item.suggestedBid ?? null,
+    spend: item.spend ?? null,
+    orders: item.orders ?? null,
+    roas: item.roas ?? null,
+    reason: item.reason || item.nextStep || "",
+    reportDate: item.reportDate || "",
+  };
+}
+
+function recommendationId(type, item) {
+  const context = recommendationContext(type, item);
+  return [type, context.campaignName, context.target, context.action, context.currentBid, context.suggestedBid, context.reportDate].join("|");
+}
+
+function recommendationStatus(type, item) {
+  return state.recommendationInteractions[recommendationId(type, item)]?.status || "Proposed";
+}
+
+function renderRecommendationActions(type, item) {
+  const id = recommendationId(type, item);
+  const interaction = state.recommendationInteractions[id];
+  const status = interaction?.status || "Proposed";
+  return `
+    <div class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
+      <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
+      <div class="recommendation-actions">
+        <button type="button" class="ask-audit-button" data-recommendation-action="made_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Made Change</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="ignore" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Ignore</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="remind_later" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Remind Me Later</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="discuss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Discuss</button>
+      </div>
+      ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
+    </div>
+  `;
+}
+
+function findRecommendation(type, id) {
+  const audit = state.dailyAudit || {};
+  const pools = {
+    bid_30: audit.bidRecommendations || [],
+    bid_14: audit.bidRecommendations14Day || [],
+    search_30: audit.searchTermFindings || [],
+    search_14: audit.searchTermFindings14Day || [],
+    sales_opportunity: audit.salesPatternOpportunities || [],
+  };
+  return (pools[type] || []).find((item) => recommendationId(type, item) === id);
+}
+
+function reminderDate(choice) {
+  const days = { "Tomorrow": 1, "3 Days": 3, "1 Week": 7 }[choice];
+  if (!days) return "";
+  const value = new Date();
+  value.setDate(value.getDate() + days);
+  return value.toLocaleDateString("en-CA");
+}
+
+async function handleRecommendationAction(button) {
+  const type = button.dataset.recommendationType;
+  const id = button.dataset.recommendationId;
+  const action = button.dataset.recommendationAction;
+  const item = findRecommendation(type, id);
+  if (!item) return;
+  const context = recommendationContext(type, item);
+  if (action === "discuss") {
+    state.activeRecommendation = { recommendationId: id, context };
+    state.aiMode = "ask";
+    navigateToPage("ai");
+    return;
+  }
+  let reason = "";
+  let reminderAt = "";
+  let status = "Completed";
+  if (action === "ignore") {
+    reason = window.prompt("Why are you ignoring this recommendation?") || "";
+    if (!reason.trim()) return;
+    status = "Ignored";
+  } else if (action === "remind_later") {
+    const choice = window.prompt("Remind me when? Enter Tomorrow, 3 Days, or 1 Week.", "Tomorrow") || "";
+    reminderAt = reminderDate(choice.trim());
+    if (!reminderAt) return;
+    status = "Deferred";
+  }
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/recommendation-interaction", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recommendationId: id, recommendationType: type, action, status, reason, reminderAt, context }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "The recommendation action could not be saved.");
+    state.recommendationInteractions[id] = { ...result, context, status, lastAction: action, reason, reminderAt };
+    render();
+  } catch (error) {
+    button.disabled = false;
+    window.alert(error.message || "The recommendation action could not be saved.");
+  }
+}
+
 function renderDailyAudit() {
   if (state.dailyAuditLoading && !state.dailyAudit) {
     return `<section class="card"><div class="sub">Loading the latest daily audit...</div></section>`;
@@ -1401,6 +1528,7 @@ function renderDailyAudit() {
             <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
             <p>${escapeHtml(item.reason)}</p>
             <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("bid_30", item)}
           </article>
         `).join("") : `<div class="audit-empty">No bid changes meet the evidence thresholds. Holding steady is a valid decision.</div>`}
         ${changes.length > 20 ? `<div class="sub">Showing the 20 highest-priority actions of ${changes.length}.</div>` : ""}
@@ -1426,6 +1554,7 @@ function renderDailyAudit() {
             <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
             <p>${escapeHtml(item.reason)}</p>
             <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("bid_14", item)}
           </article>
         `).join("") : `<div class="audit-empty">No 14-day bid changes meet the evidence thresholds yet. This section will fill after the next ad refresh imports 14-day target data.</div>`}
         ${fourteenDayRecommendations.length > 20 ? `<div class="sub">Showing the 20 highest-priority 14-day actions of ${fourteenDayRecommendations.length}.</div>` : ""}
@@ -1443,6 +1572,7 @@ function renderDailyAudit() {
             <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
             <div class="search-action">${escapeHtml(item.action)}</div>
             <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("search_30", item)}
           </article>
         `).join("") : `<div class="audit-empty">Waiting for the first Amazon search-term report to complete. The checkpointed report will resume during the next refresh.</div>`}
       </section>
@@ -1462,6 +1592,7 @@ function renderDailyAudit() {
             <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
             <div class="search-action">${escapeHtml(item.action)}</div>
             <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("search_14", item)}
           </article>
         `).join("") : `<div class="audit-empty">This will fill after the next ad refresh imports 14-day search-term data.</div>`}
       </section>
@@ -1495,6 +1626,7 @@ function renderDailyAudit() {
             <p>${escapeHtml(item.nextStep)}</p>
             <div class="sub">${item.hasObviousCampaign ? "An existing campaign appears to match this title." : "No obvious campaign-name match was found; confirm manually before creating one."}</div>
             <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the sales opportunity for ${item.title}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("sales_opportunity", item)}
           </article>
         `).join("") : `<div class="audit-empty">No new or accelerating sales pattern currently meets the review threshold.</div>`}
       </section>
@@ -1633,6 +1765,7 @@ function render() {
         loadAnalyticsData(),
         loadDailyAudit(),
         loadChangeOptions(),
+        loadRecommendationInteractions(),
       ]);
     });
   });
@@ -1762,6 +1895,18 @@ function render() {
     });
   });
 
+  document.querySelectorAll("[data-recommendation-action]").forEach((button) => {
+    button.onclick = () => handleRecommendationAction(button);
+  });
+
+  const clearRecommendation = document.querySelector("[data-clear-recommendation]");
+  if (clearRecommendation) {
+    clearRecommendation.onclick = () => {
+      state.activeRecommendation = null;
+      render();
+    };
+  }
+
   document.querySelectorAll("[data-ai-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       state.aiMode = button.dataset.aiMode;
@@ -1839,3 +1984,4 @@ loadCampaignsData();
 loadAnalyticsData();
 loadDailyAudit();
 loadChangeOptions();
+loadRecommendationInteractions();
