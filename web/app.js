@@ -1385,6 +1385,14 @@ function recommendationContext(type, item) {
     campaignName: item.campaignName || "",
     target: item.target || item.searchTerm || item.title || "",
     action: item.action || item.pattern || "",
+    confidence: item.confidence || item.priority || "",
+    supportingMetrics: {
+      clicks: item.clicks ?? null,
+      spend: item.spend ?? null,
+      orders: item.orders ?? null,
+      roas: item.roas ?? null,
+      changePercent: item.changePercent ?? null,
+    },
     currentBid: item.currentBid ?? null,
     suggestedBid: item.suggestedBid ?? null,
     spend: item.spend ?? null,
@@ -1476,7 +1484,7 @@ async function handleRecommendationAction(button) {
     const response = await fetch("/api/recommendation-interaction", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recommendationId: id, recommendationType: type, action, status, reason, reminderAt, context }),
+    body: JSON.stringify({ recommendationId: id, recommendationType: type, action, status, reason, reminderAt, context, campaign: context.campaignName, confidence: context.confidence, supportingMetrics: context.supportingMetrics }),
     });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "The recommendation action could not be saved.");

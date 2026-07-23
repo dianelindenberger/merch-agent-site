@@ -76,10 +76,31 @@ def ensure_recommendation_interactions_table(conn):
             reason TEXT,
             reminder_at TEXT,
             acted_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            campaign TEXT,
+            confidence TEXT,
+            supporting_metrics TEXT,
+            user_action TEXT,
+            user_notes TEXT,
+            date_created TEXT,
+            date_completed TEXT
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(recommendation_interactions)").fetchall()}
+    additions = {
+        "campaign": "TEXT",
+        "confidence": "TEXT",
+        "supporting_metrics": "TEXT",
+        "user_action": "TEXT",
+        "user_notes": "TEXT",
+        "date_created": "TEXT",
+        "date_completed": "TEXT",
+    }
+    for name, column_type in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE recommendation_interactions ADD COLUMN {name} {column_type}")
+    conn.execute("UPDATE recommendation_interactions SET date_created = COALESCE(date_created, acted_at, updated_at) WHERE date_created IS NULL")
     conn.commit()
 
 
@@ -87,7 +108,7 @@ def recommendation_interactions_payload():
     conn = connect()
     ensure_recommendation_interactions_table(conn)
     rows = conn.execute(
-        "SELECT recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at FROM recommendation_interactions"
+        "SELECT recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at, campaign, confidence, supporting_metrics, user_action, user_notes, date_created, date_completed FROM recommendation_interactions"
     ).fetchall()
     conn.close()
     return {
@@ -102,6 +123,13 @@ def recommendation_interactions_payload():
                 "reminderAt": row["reminder_at"] or "",
                 "actedAt": row["acted_at"],
                 "updatedAt": row["updated_at"],
+                "campaign": row["campaign"] or "",
+                "confidence": row["confidence"] or "",
+                "supportingMetrics": json.loads(row["supporting_metrics"] or "{}"),
+                "userAction": row["user_action"] or row["last_action"],
+                "userNotes": row["user_notes"] or row["reason"] or "",
+                "dateCreated": row["date_created"] or row["acted_at"],
+                "dateCompleted": row["date_completed"] or "",
             }
             for row in rows
         }
@@ -121,13 +149,22 @@ def save_recommendation_interaction(payload):
     now = datetime.now(EASTERN_TIME).isoformat()
     reason = str(payload.get("reason", "")).strip()[:2000]
     reminder_at = str(payload.get("reminderAt", "")).strip()[:80]
+    campaign = str(payload.get("campaign") or context.get("campaignName") or "").strip()[:240]
+    confidence = str(payload.get("confidence") or context.get("confidence") or "").strip()[:40]
+    supporting_metrics = payload.get("supportingMetrics") if isinstance(payload.get("supportingMetrics"), dict) else context.get("supportingMetrics", {})
+    date_completed = now if status == "Completed" else ""
     conn = connect()
     ensure_recommendation_interactions_table(conn)
+    existing = conn.execute(
+        "SELECT date_created, acted_at FROM recommendation_interactions WHERE recommendation_id = ?",
+        (recommendation_id,),
+    ).fetchone()
+    date_created = (existing["date_created"] or existing["acted_at"]) if existing else now
     conn.execute(
         """
         INSERT INTO recommendation_interactions
-        (recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at, campaign, confidence, supporting_metrics, user_action, user_notes, date_created, date_completed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(recommendation_id) DO UPDATE SET
           recommendation_type=excluded.recommendation_type,
           recommendation_context=excluded.recommendation_context,
@@ -136,13 +173,48 @@ def save_recommendation_interaction(payload):
           reason=excluded.reason,
           reminder_at=excluded.reminder_at,
           acted_at=excluded.acted_at,
-          updated_at=excluded.updated_at
+          updated_at=excluded.updated_at,
+          campaign=excluded.campaign,
+          confidence=excluded.confidence,
+          supporting_metrics=excluded.supporting_metrics,
+          user_action=excluded.user_action,
+          user_notes=excluded.user_notes,
+          date_completed=CASE WHEN excluded.status = 'Completed' THEN excluded.date_completed ELSE recommendation_interactions.date_completed END
         """,
-        (recommendation_id, recommendation_type, json.dumps(context), status, action, reason, reminder_at, now, now),
+        (recommendation_id, recommendation_type, json.dumps(context), status, action, reason, reminder_at, now, now, campaign, confidence, json.dumps(supporting_metrics), action, reason, date_created, date_completed),
     )
     conn.commit()
     conn.close()
-    return {"ok": True, "recommendationId": recommendation_id, "status": status, "lastAction": action, "actedAt": now, "reminderAt": reminder_at, "reason": reason}
+    return {"ok": True, "recommendationId": recommendation_id, "status": status, "lastAction": action, "actedAt": now, "reminderAt": reminder_at, "reason": reason, "dateCreated": date_created, "dateCompleted": date_completed, "campaign": campaign, "confidence": confidence, "supportingMetrics": supporting_metrics, "userAction": action, "userNotes": reason}
+
+
+def recommendation_history_context(limit=30):
+    conn = connect()
+    ensure_recommendation_interactions_table(conn)
+    rows = conn.execute(
+        "SELECT recommendation_id, recommendation_type, campaign, confidence, supporting_metrics, status, user_action, user_notes, date_created, date_completed FROM recommendation_interactions ORDER BY COALESCE(updated_at, date_created) DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    history = []
+    for row in rows:
+        try:
+            metrics = json.loads(row["supporting_metrics"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metrics = {}
+        history.append({
+            "recommendationId": row["recommendation_id"],
+            "type": row["recommendation_type"],
+            "campaign": row["campaign"] or "",
+            "confidence": row["confidence"] or "",
+            "supportingMetrics": metrics,
+            "status": row["status"],
+            "userAction": row["user_action"] or "",
+            "userNotes": row["user_notes"] or "",
+            "dateCreated": row["date_created"] or "",
+            "dateCompleted": row["date_completed"] or "",
+        })
+    return history
 
 
 def ensure_sales_import_runs_table(conn):
@@ -2155,6 +2227,7 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
     campaigns_last7 = campaigns_payload(analysis_period).get("campaigns", [])
     designs_last7 = designs_payload(analysis_period).get("designs", [])
     daily_audit = build_daily_audit()
+    previous_decisions = recommendation_history_context()
     audit_bid_actions = [
         item for item in daily_audit.get("bidRecommendations", [])
         if item.get("action") != "Hold"
@@ -2182,6 +2255,12 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             "pendingLog": pending_change,
             "question": question,
         }
+
+    if previous_decisions:
+        contextual_question += (
+            "\nPrevious recommendation decisions (use as historical context; do not override current evidence): "
+            + json.dumps(previous_decisions, ensure_ascii=False)
+        )
 
     navigation_commands = (
         ("campaign", "ads", "Campaigns"),
