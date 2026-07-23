@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-APP_ICON_PATH = PROJECT_ROOT / "public" / "merch-agent-logo.png"
+APP_ICON_PATH = Path(__file__).resolve().parent / "public" / "merch-agent-logo.png"
 SALES_SYNC_LOCK = threading.Lock()
 HOSTED_REFRESH_LOCK = threading.Lock()
 HOSTED_REFRESH_STATUS = {
