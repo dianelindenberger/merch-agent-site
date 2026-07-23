@@ -267,7 +267,7 @@ async function loadHomeData() {
   } finally {
     if (requestId !== state.homeRequest || requestedPeriod !== state.homePeriod) return;
     state.homeLoading = false;
-    render();
+    if (state.page === "home") render();
   }
 }
 
@@ -286,7 +286,7 @@ async function loadRoyaltyTier() {
     state.royaltyTierError = "Royalty tier data needs the v2 data server.";
   }
 
-  render();
+  if (state.page === "home") render();
 }
 
 async function loadSalesStatus() {
@@ -308,7 +308,7 @@ async function loadRecommendationInteractions() {
   } catch (error) {
     state.recommendationInteractions = {};
   }
-  if (state.page === "ai") render();
+  if (state.page === "ai" && state.aiMode === "audit") render();
 }
 
 async function loadAdsData() {
@@ -331,7 +331,7 @@ async function loadAdsData() {
     state.adsError = "Showing sample ad metrics. Import an advertised product report to use live data.";
   }
 
-  render();
+  if (state.page === "ads") render();
 }
 
 async function loadDailyAudit() {
@@ -347,7 +347,7 @@ async function loadDailyAudit() {
   } finally {
     state.dailyAuditLoading = false;
   }
-  render();
+  if (state.page === "ai" && state.aiMode === "audit") render();
 }
 
 async function uploadSalesReport(file) {
@@ -396,7 +396,7 @@ async function loadCampaignsData() {
     state.campaignsError = "Campaign data could not be loaded from the local database.";
   }
 
-  render();
+  if (state.page === "ads") render();
 }
 
 async function askAssistant(question) {
@@ -587,7 +587,7 @@ async function loadAnalyticsData() {
     state.analyticsError = "Analytics needs the v2 data server and daily sales imports.";
   }
 
-  render();
+  if (state.page === "analytics") render();
 }
 
 function moneyCard(label, value, delta) {
