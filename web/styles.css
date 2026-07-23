@@ -1418,7 +1418,9 @@ svg {
 .audit-action p { margin: 0; color: var(--ink); font-size: 11px; line-height: 1.45; }
 .ask-audit-button { justify-self: start; min-height: 48px; border: 1px solid #d8dcf7; border-radius: 12px; background: #f4f5ff; color: var(--indigo); padding: 10px 12px; font-size: 11px; font-weight: 850; }
 .recommendation-interaction { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
-.recommendation-action-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 48px; border: 0; padding: 8px 10px; border-radius: 11px; background: var(--surface-soft); color: var(--indigo); cursor: pointer; font: inherit; font-size: 11px; font-weight: 850; text-align: left; }
+.recommendation-action-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 48px; border: 0; padding: 8px 10px; border-radius: 11px; background: var(--surface-soft); color: var(--indigo); cursor: pointer; font: inherit; font-size: 11px; font-weight: 850; text-align: left; list-style: none; }
+.recommendation-action-toggle::-webkit-details-marker { display: none; }
+.recommendation-action-toggle::marker { content: ""; }
 .recommendation-action-toggle strong { color: var(--ink); }
 .recommendation-action-body { display: grid; gap: 8px; }
 .recommendation-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
@@ -1622,7 +1624,8 @@ svg {
   background: linear-gradient(180deg, transparent, #fff 30%);
 }
 
-.prompt-bar input {
+.prompt-bar input,
+.prompt-bar textarea {
   position: relative;
   z-index: 1;
   border: 1px solid var(--line);
@@ -1633,6 +1636,13 @@ svg {
   touch-action: manipulation;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.prompt-bar textarea {
+  resize: none;
+  overflow: hidden;
+  line-height: 1.35;
+  padding-top: 12px;
 }
 
 .send-button {

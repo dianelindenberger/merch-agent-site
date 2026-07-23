@@ -309,7 +309,7 @@ async function loadRecommendationInteractions() {
   } catch (error) {
     state.recommendationInteractions = {};
   }
-  if (state.page === "ai" && state.aiMode === "audit") render();
+  if (state.page === "ai" && state.aiMode === "audit") render({ preserveScroll: true });
 }
 
 async function loadAdsData() {
@@ -348,7 +348,7 @@ async function loadDailyAudit() {
   } finally {
     state.dailyAuditLoading = false;
   }
-  if (state.page === "ai" && state.aiMode === "audit") render();
+  if (state.page === "ai" && state.aiMode === "audit") render({ preserveScroll: true });
 }
 
 async function uploadSalesReport(file) {
@@ -1350,7 +1350,7 @@ function renderAskAssistant() {
         ${state.aiError ? `<div class="card"><div class="negative sub">${escapeHtml(state.aiError)}</div></div>` : ""}
       </section>
       <div class="prompt-bar">
-        <input type="text" inputmode="text" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-ai-input aria-label="Ask the assistant" placeholder="Ask a question or give a command" value="${escapeHtml(state.aiDraft)}">
+        <textarea rows="1" inputmode="text" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-ai-input aria-label="Ask the assistant" placeholder="Ask a question or give a command">${escapeHtml(state.aiDraft)}</textarea>
         <button type="button" class="send-button" data-ai-send aria-label="Send question">&#8593;</button>
       </div>
     </div>
@@ -1457,11 +1457,11 @@ function renderRecommendationActions(type, item) {
   const status = interaction?.status || "Proposed";
   const isOpen = state.openRecommendationIds.has(id);
   return `
-    <div class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
-      <button type="button" class="recommendation-action-toggle" data-recommendation-toggle="${escapeHtml(id)}" aria-expanded="${isOpen ? "true" : "false"}">
+    <details class="recommendation-interaction" data-recommendation-details="${escapeHtml(id)}"${isOpen ? " open" : ""}>
+      <summary class="recommendation-action-toggle">
         <span>Recommendation actions</span><strong>${escapeHtml(status)}</strong>
-      </button>
-      <div class="recommendation-action-body"${isOpen ? "" : " hidden"}>
+      </summary>
+      <div class="recommendation-action-body">
         <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
         <div class="recommendation-actions">
         <button type="button" class="ask-audit-button" data-recommendation-action="made_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Made Change</button>
@@ -1471,7 +1471,7 @@ function renderRecommendationActions(type, item) {
         </div>
         ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
       </div>
-    </div>
+    </details>
   `;
 }
 
@@ -1969,17 +1969,11 @@ function render({ preserveScroll = false } = {}) {
     button.onclick = () => handleRecommendationAction(button);
   });
 
-  document.querySelectorAll("[data-recommendation-toggle]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const actionBody = button.parentElement?.querySelector(".recommendation-action-body");
-      if (!actionBody) return;
-      const willOpen = actionBody.hidden;
-      actionBody.hidden = !willOpen;
-      if (willOpen) state.openRecommendationIds.add(button.dataset.recommendationToggle);
-      else state.openRecommendationIds.delete(button.dataset.recommendationToggle);
-      button.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  document.querySelectorAll("[data-recommendation-details]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      const id = details.dataset.recommendationDetails;
+      if (details.open) state.openRecommendationIds.add(id);
+      else state.openRecommendationIds.delete(id);
     });
   });
 
