@@ -52,6 +52,7 @@ const state = {
   salesUploadLoading: false,
   salesUploadMessage: "",
   salesUploadError: "",
+  salesStatus: null,
 };
 
 const sampleProducts = [
@@ -236,6 +237,17 @@ async function loadRoyaltyTier() {
   render();
 }
 
+async function loadSalesStatus() {
+  try {
+    const response = await fetch("/api/sales-status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.salesStatus = await response.json();
+  } catch (error) {
+    state.salesStatus = { status: "failed", lastError: "Sales status could not be loaded." };
+  }
+  if (state.page === "more") render();
+}
+
 async function loadAdsData() {
   try {
     const params = new URLSearchParams({ period: state.adsPeriod });
@@ -297,7 +309,7 @@ async function uploadSalesReport(file) {
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || `Upload failed (${response.status})`);
     state.salesUploadMessage = result.message || "Sales report synchronized.";
-    await Promise.all([loadHomeData(), loadAnalyticsData(), loadDailyAudit()]);
+    await Promise.all([loadHomeData(), loadSalesStatus(), loadAnalyticsData(), loadDailyAudit()]);
   } catch (error) {
     state.salesUploadError = error.message || "The sales report could not be uploaded.";
   } finally {
@@ -1351,6 +1363,8 @@ function renderDailyAudit() {
           <div><strong>${searchTerms.length}</strong><span>Search terms</span></div>
         </div>
         <div class="audit-source sub">Targets: ${escapeHtml(audit.targetSnapshot || "not loaded")} · 14-day targets: ${escapeHtml(audit.targetSnapshot14Day || "pending first import")} · Search terms: ${escapeHtml(audit.searchTermSnapshot || "pending first import")}${audit.searchTermPeriod ? ` (${escapeHtml(auditPeriodLabel(audit.searchTermPeriod))})` : ""}</div>
+        <div class="audit-source sub">Merch sales through: ${escapeHtml(audit.salesDataThrough || "not loaded")} Â· Dataset status: ${audit.datasetsCurrent ? "current" : "delayed or stale"}</div>
+        ${audit.salesDataStale ? `<div class="audit-stale-warning">Sales data is delayed through ${escapeHtml(audit.salesDataThrough || "an unknown date")}. Recommendations are provisional until a newer Merch report is imported.</div>` : ""}
         ${audit.targetDataStale ? `<div class="audit-stale-warning">Target data is ${audit.targetReportDate ? `only current through ${escapeHtml(audit.targetReportDate)}` : "missing a report date"}. Refresh before acting on these bid suggestions.</div>` : ""}
       </section>
 
@@ -1497,8 +1511,11 @@ function renderAI() {
 }
 
 function renderMore() {
+  const salesStatus = state.salesStatus || {};
+  const salesStatusLabel = salesStatus.status === "current" ? "Current" : salesStatus.status === "failed" ? "Failed" : "Stale";
+  const salesStatusTone = salesStatus.status === "current" ? "performing" : salesStatus.status === "failed" ? "watch" : "review";
   const statusRows = [
-    ["Merch sales", state.homeData?.reportDate || "Not loaded", "Complete through"],
+    ["Merch sales", salesStatus.latestSalesDate || state.homeData?.reportDate || "Not loaded", "Complete through"],
     ["Daily analytics", state.analyticsData?.dataThrough || state.analyticsData?.endDate || "Not loaded", "Available through"],
     ["Amazon Ads", state.adsData?.reportDate || "Not loaded", state.adsData?.partial ? "Includes partial data" : "Report through"],
     ["Campaign performance", state.campaignsData?.reportDate || "Not loaded", "Report through"],
@@ -1520,7 +1537,7 @@ function renderMore() {
             <h2 class="section-title">Data Status</h2>
             <div class="sub">Dates shown throughout the app come from these local imports.</div>
           </div>
-          <span class="status-pill performing">Connected</span>
+          <span class="status-pill ${salesStatusTone}">${salesStatusLabel}</span>
         </div>
         <div class="status-list">
           ${statusRows.map(([label, value, context]) => `
@@ -1530,6 +1547,9 @@ function renderMore() {
             </div>
           `).join("")}
         </div>
+        <div class="sub">Last successful import: ${escapeHtml(salesStatus.lastSuccessfulImport || "None")}</div>
+        <div class="sub">Source: ${escapeHtml(salesStatus.source || "Not available")} | ${Number(salesStatus.rowsProcessed || 0).toLocaleString()} rows processed</div>
+        ${salesStatus.lastError ? `<div class="negative sub">${escapeHtml(salesStatus.lastError)}</div>` : ""}
       </section>
       <button type="button" class="primary-button wide-button" data-refresh-all>Refresh displayed data</button>
       <section class="card sales-upload-card">
@@ -1604,6 +1624,7 @@ function render() {
       button.disabled = true;
       await Promise.all([
         loadHomeData(),
+        loadSalesStatus(),
         loadRoyaltyTier(),
         loadAdsData(),
         loadCampaignsData(),
@@ -1809,6 +1830,7 @@ function render() {
 
 render();
 loadHomeData();
+loadSalesStatus();
 loadRoyaltyTier();
 loadAdsData();
 loadCampaignsData();

@@ -1,6 +1,7 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import base64
 import binascii
+import hashlib
 import hmac
 import json
 import os
@@ -41,6 +42,7 @@ INCOMING_REPORTS = Path(os.getenv("MERCH_AGENT_REPORTS_DIR", DATA_DIR / "incomin
 AUTH_USERNAME = os.getenv("MERCH_AGENT_USERNAME", "").strip()
 AUTH_PASSWORD = os.getenv("MERCH_AGENT_PASSWORD", "")
 MAX_SALES_UPLOAD_BYTES = 20 * 1024 * 1024
+MERCH_AGENT_IMPORT_TOKEN = os.getenv("MERCH_AGENT_IMPORT_TOKEN", "").strip()
 DAILY_REFRESH_ENABLED = os.getenv("MERCH_AGENT_DAILY_REFRESH_ENABLED", "false").lower() in {"1", "true", "yes"}
 DAILY_REFRESH_TIME = os.getenv("MERCH_AGENT_DAILY_REFRESH_TIME", "06:00")
 AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "12:00,17:00")
@@ -58,6 +60,145 @@ MARKET_NAMES = {
 
 SALES_REPORT_COLUMNS = {"Title", "Purchased", "Royalties", "Revenue", "Date"}
 SALES_REPORT_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+
+
+def ensure_sales_import_runs_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sales_import_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            imported_at TEXT NOT NULL,
+            file_name TEXT,
+            file_hash TEXT,
+            rows_processed INTEGER DEFAULT 0,
+            new_rows INTEGER DEFAULT 0,
+            updated_rows INTEGER DEFAULT 0,
+            latest_sales_date TEXT,
+            source TEXT,
+            status TEXT NOT NULL,
+            error TEXT
+        )
+        """
+    )
+    conn.commit()
+
+
+def sales_status_payload():
+    conn = connect()
+    ensure_sales_import_runs_table(conn)
+    row = conn.execute(
+        "SELECT * FROM sales_import_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    through = conn.execute("SELECT MAX(sale_date) FROM sales_daily").fetchone()[0]
+    conn.close()
+    if not row:
+        return {
+            "status": "stale",
+            "latestSalesDate": through or "",
+            "lastSuccessfulImport": None,
+            "rowsProcessed": 0,
+            "source": "none",
+            "lastError": "No Merch sales report has been imported yet.",
+        }
+    age_days = None
+    if through:
+        try:
+            age_days = (date.today() - date.fromisoformat(through)).days
+        except ValueError:
+            age_days = None
+    status = "current" if row["status"] == "success" and age_days is not None and age_days <= 1 else "stale"
+    return {
+        "status": status if row["status"] == "success" else "failed",
+        "latestSalesDate": through or row["latest_sales_date"] or "",
+        "lastSuccessfulImport": row["imported_at"] if row["status"] == "success" else "",
+        "rowsProcessed": int(row["rows_processed"] or 0),
+        "newRows": int(row["new_rows"] or 0),
+        "updatedRows": int(row["updated_rows"] or 0),
+        "source": row["source"] or "unknown",
+        "lastError": row["error"] or "",
+        "ageDays": age_days,
+    }
+
+
+def import_token_is_valid(header_value):
+    if not MERCH_AGENT_IMPORT_TOKEN:
+        return False
+    if not (header_value or "").startswith("Bearer "):
+        return False
+    return hmac.compare_digest(header_value[7:].strip(), MERCH_AGENT_IMPORT_TOKEN)
+
+
+def import_merch_sales_payload(payload):
+    file_name = Path(str(payload.get("fileName", "merch-sales.csv"))).name
+    encoded = str(payload.get("data", ""))
+    suffix = Path(file_name).suffix.lower()
+    if suffix not in SALES_REPORT_EXTENSIONS:
+        return {"ok": False, "error": "Upload a CSV or Excel Merch sales report."}
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return {"ok": False, "error": "The sales report could not be decoded."}
+    if not raw or len(raw) > MAX_SALES_UPLOAD_BYTES:
+        return {"ok": False, "error": "The sales report is empty or larger than 20 MB."}
+
+    source = "windows_helper"
+    if str(payload.get("source", "")).strip():
+        source = str(payload["source"]).strip()[:80]
+    digest = hashlib.sha256(raw).hexdigest()
+    conn = connect()
+    ensure_sales_import_runs_table(conn)
+    prior = conn.execute("SELECT id FROM sales_import_runs WHERE file_hash = ? AND status = 'success' LIMIT 1", (digest,)).fetchone()
+    conn.close()
+    if prior:
+        return {"ok": True, "alreadyImported": True, "fileHash": digest, "message": "This sales report was already imported.", "status": sales_status_payload()}
+
+    rows_processed = 0
+    latest_sales_date = ""
+    try:
+        import pandas as pd
+        from io import BytesIO
+        frame = pd.read_csv(BytesIO(raw)) if suffix == ".csv" else pd.read_excel(BytesIO(raw))
+        normalized = normalize_columns(frame)
+        missing = sorted(SALES_REPORT_COLUMNS.difference(normalized.columns))
+        if missing:
+            raise ValueError(f"Missing required columns: {', '.join(missing)}")
+        rows_processed = int(len(normalized))
+        parsed = pd.to_datetime(normalized["Date"], errors="coerce", format="mixed")
+        if parsed.isna().all():
+            raise ValueError("The report does not contain readable sales dates.")
+        latest_sales_date = parsed.max().date().isoformat()
+        result = sync_uploaded_sales_report(file_name, encoded)
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or "The existing sales importer rejected the report.")
+    except Exception as exc:
+        conn = connect()
+        ensure_sales_import_runs_table(conn)
+        conn.execute(
+            "INSERT INTO sales_import_runs (imported_at,file_name,file_hash,rows_processed,latest_sales_date,source,status,error) VALUES (?,?,?,?,?,?,?,?)",
+            (datetime.now(EASTERN_TIME).isoformat(), file_name, digest, rows_processed, latest_sales_date, source, "failed", str(exc)),
+        )
+        conn.commit(); conn.close()
+        return {"ok": False, "error": str(exc), "fileHash": digest}
+
+    conn = connect()
+    ensure_sales_import_runs_table(conn)
+    conn.execute(
+        "INSERT INTO sales_import_runs (imported_at,file_name,file_hash,rows_processed,new_rows,updated_rows,latest_sales_date,source,status,error) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (datetime.now(EASTERN_TIME).isoformat(), file_name, digest, rows_processed, rows_processed, 0, latest_sales_date, source, "success", ""),
+    )
+    conn.commit(); conn.close()
+    return {
+        "ok": True,
+        "alreadyImported": False,
+        "fileName": file_name,
+        "fileHash": digest,
+        "rowsProcessed": rows_processed,
+        "newRows": rows_processed,
+        "updatedRows": 0,
+        "latestSalesDate": latest_sales_date,
+        "message": "Merch sales report imported successfully.",
+        "status": sales_status_payload(),
+    }
 
 
 def authentication_enabled():
@@ -2242,6 +2383,10 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             self.send_json(sales_sync_status())
             return
 
+        if parsed.path == "/api/sales-status":
+            self.send_json(sales_status_payload())
+            return
+
         if parsed.path == "/api/home":
             query = parse_qs(parsed.query)
             period = query.get("period", ["yesterday"])[0]
@@ -2321,14 +2466,17 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        allowed_paths = {"/api/assistant", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload"}
+        allowed_paths = {"/api/assistant", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales"}
         if parsed.path not in allowed_paths:
             self.send_json({"error": "Not found"}, 404)
             return
 
-        if self.require_authentication():
+        if parsed.path == "/api/imports/merch-sales":
+            if not import_token_is_valid(self.headers.get("Authorization", "")):
+                self.send_json({"error": "A valid Merch sales import token is required."}, 401)
+                return
+        elif self.require_authentication():
             return
-
 
         if parsed.path == "/api/sales-sync":
             origin = self.headers.get("Origin", "")
@@ -2344,7 +2492,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            request_limit = (MAX_SALES_UPLOAD_BYTES * 2) if parsed.path == "/api/sales-upload" else 50000
+            request_limit = (MAX_SALES_UPLOAD_BYTES * 2) if parsed.path in {"/api/sales-upload", "/api/imports/merch-sales"} else 50000
             content_length = int(self.headers.get("Content-Length", "0"))
             if content_length > request_limit:
                 self.send_json({"error": "Request is too large"}, 413)
@@ -2362,6 +2510,9 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
                 self.send_json(result, 200 if result.get("ok") else 400)
             elif parsed.path == "/api/sales-upload":
                 result = sync_uploaded_sales_report(payload.get("fileName", ""), payload.get("data", ""))
+                self.send_json(result, 200 if result.get("ok") else 400)
+            elif parsed.path == "/api/imports/merch-sales":
+                result = import_merch_sales_payload(payload)
                 self.send_json(result, 200 if result.get("ok") else 400)
             elif parsed.path == "/api/refresh-ads-now":
                 result = start_hosted_ads_refresh_now()
