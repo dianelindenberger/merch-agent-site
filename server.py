@@ -2543,6 +2543,27 @@ def assistant_payload(question, history=None, requested_period="last7", recommen
             ) + "."
         else:
             answer = "No recent sales pattern currently meets the opportunity threshold."
+    elif any(phrase in normalized for phrase in ("least performing", "worst performing", "lowest performing", "weakest campaign", "worst campaign")):
+        ranked = sorted(
+            campaigns_last7,
+            key=lambda item: (
+                item.get("orders", 0) > 0,
+                item.get("roas", 0) if item.get("orders", 0) else -item.get("spend", 0),
+                item.get("sales", 0),
+            ),
+        )
+        candidates = [item for item in ranked if item.get("spend", 0) > 0][:5]
+        if candidates:
+            answer = f"Lowest-performing campaigns for {period_label}:\n" + "\n".join(
+                f"• {item['name']} — {currency_amount_text(item['spend'], item.get('currency'))} spend; {currency_amount_text(item['sales'], item.get('currency'))} ad sales; {item['orders']} orders; {item['roas']:.2f} ROAS"
+                for item in candidates
+            )
+            zero_order = [item for item in candidates if item.get("orders", 0) == 0]
+            if zero_order:
+                answer += f"\n\nPriority: start with {zero_order[0]['name']} because it spent money without producing an order in this period. Review its search terms and targets before pausing the whole campaign."
+            evidence.extend(f"Amazon Ads, {period_label}, report ending {item.get('reportDate') or 'latest'}" for item in candidates[:3])
+        else:
+            answer = f"I do not have campaign spend rows for {period_label}, so I cannot identify the weakest campaign."
     elif any(phrase in normalized for phrase in ("pause", "wasting", "waste", "campaigns need review", "campaign need review", "which campaigns")):
         review = sorted(
             [
