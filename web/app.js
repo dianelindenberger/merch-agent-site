@@ -417,6 +417,7 @@ async function askAssistant(question) {
   try {
     const response = await fetch("/api/assistant", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question: cleanQuestion,
@@ -437,7 +438,7 @@ async function askAssistant(question) {
       if (data.action.adsTab) state.adsTab = data.action.adsTab;
     }
   } catch (error) {
-    state.aiError = "The assistant could not reach the local data server. Please try again.";
+    state.aiError = error?.message || "The assistant could not reach the local data server. Please try again.";
   } finally {
     state.aiLoading = false;
     state.aiScrollToBottom = true;
@@ -1528,6 +1529,7 @@ async function handleRecommendationAction(button) {
   try {
     const response = await fetch("/api/recommendation-interaction", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ recommendationId: id, recommendationType: type, action, status, reason, reminderAt, context, campaign: context.campaignName, confidence: context.confidence, supportingMetrics: context.supportingMetrics }),
     });
