@@ -38,6 +38,7 @@ const state = {
   aiLoading: false,
   aiError: "",
   aiDraft: "",
+  aiFocusComposer: false,
   aiScrollToBottom: false,
   aiMode: "audit",
   changeOptions: null,
@@ -440,6 +441,7 @@ async function askAssistant(question) {
   } finally {
     state.aiLoading = false;
     state.aiScrollToBottom = true;
+    state.aiFocusComposer = state.page === "ai" && state.aiMode === "ask";
     render();
   }
 }
@@ -1532,7 +1534,7 @@ async function handleRecommendationAction(button) {
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "The recommendation action could not be saved.");
     state.recommendationInteractions[id] = { ...result, context, status, lastAction: action, reason, reminderAt };
-    render();
+    render({ preserveScroll: true });
   } catch (error) {
     button.disabled = false;
     window.alert(error.message || "The recommendation action could not be saved.");
@@ -2057,6 +2059,11 @@ function render({ preserveScroll = false } = {}) {
         submitQuestion();
       }
     });
+  }
+
+  if (state.aiFocusComposer && state.page === "ai" && state.aiMode === "ask") {
+    state.aiFocusComposer = false;
+    requestAnimationFrame(() => document.querySelector("[data-ai-input]")?.focus());
   }
 }
 
