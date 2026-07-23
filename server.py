@@ -19,6 +19,15 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 SALES_SYNC_LOCK = threading.Lock()
+HOSTED_REFRESH_LOCK = threading.Lock()
+HOSTED_REFRESH_STATUS = {
+    "running": False,
+    "label": "",
+    "startedAt": "",
+    "finishedAt": "",
+    "exitCode": None,
+    "error": "",
+}
 
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
@@ -270,17 +279,65 @@ def daily_refresh_scheduler():
         delay = max(1, (scheduled - datetime.now(EASTERN_TIME)).total_seconds())
         print(f"Next hosted {job['label']}: {scheduled.isoformat()}", flush=True)
         threading.Event().wait(delay)
+        run_hosted_refresh(job["label"], job["script"])
+
+
+def refresh_status_payload():
+    with HOSTED_REFRESH_LOCK:
+        return dict(HOSTED_REFRESH_STATUS)
+
+
+def run_hosted_refresh(label, script):
+    if not HOSTED_REFRESH_LOCK.acquire(blocking=False):
+        print(f"Hosted {label} skipped because another refresh is running.", flush=True)
+        return False
+    try:
+        HOSTED_REFRESH_STATUS.update({
+            "running": True,
+            "label": label,
+            "startedAt": datetime.now(EASTERN_TIME).isoformat(),
+            "finishedAt": "",
+            "exitCode": None,
+            "error": "",
+        })
         try:
             result = subprocess.run(
-                [sys.executable, str(PROJECT_ROOT / "tools" / job["script"])],
+                [sys.executable, str(PROJECT_ROOT / "tools" / script)],
                 cwd=PROJECT_ROOT,
                 text=True,
                 timeout=3600,
                 check=False,
             )
-            print(f"Hosted {job['label']} finished with exit code {result.returncode}.", flush=True)
+            HOSTED_REFRESH_STATUS.update({
+                "running": False,
+                "finishedAt": datetime.now(EASTERN_TIME).isoformat(),
+                "exitCode": result.returncode,
+            })
+            print(f"Hosted {label} finished with exit code {result.returncode}.", flush=True)
         except Exception as exc:
-            print(f"Hosted {job['label']} failed: {exc}", file=sys.stderr, flush=True)
+            HOSTED_REFRESH_STATUS.update({
+                "running": False,
+                "finishedAt": datetime.now(EASTERN_TIME).isoformat(),
+                "exitCode": -1,
+                "error": str(exc),
+            })
+            print(f"Hosted {label} failed: {exc}", file=sys.stderr, flush=True)
+    finally:
+        HOSTED_REFRESH_LOCK.release()
+    return True
+
+
+def start_hosted_ads_refresh_now():
+    with HOSTED_REFRESH_LOCK:
+        if HOSTED_REFRESH_STATUS.get("running"):
+            return {"ok": False, "running": True, "status": dict(HOSTED_REFRESH_STATUS)}
+    thread = threading.Thread(
+        target=run_hosted_refresh,
+        args=("manual Amazon Ads checkpoint refresh", "refresh_amazon_ads.py"),
+        daemon=True,
+    )
+    thread.start()
+    return {"ok": True, "started": True, "status": refresh_status_payload()}
 
 
 def money(value):
@@ -2229,6 +2286,10 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             self.send_json(change_options_payload())
             return
 
+        if parsed.path == "/api/refresh-status":
+            self.send_json(refresh_status_payload())
+            return
+
         if parsed.path == "/api/campaign-detail":
             query = parse_qs(parsed.query)
             period = query.get("period", ["last30"])[0]
@@ -2253,7 +2314,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        allowed_paths = {"/api/assistant", "/api/campaign-change", "/api/change-preview", "/api/sales-sync", "/api/sales-upload"}
+        allowed_paths = {"/api/assistant", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload"}
         if parsed.path not in allowed_paths:
             self.send_json({"error": "Not found"}, 404)
             return
@@ -2295,6 +2356,9 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             elif parsed.path == "/api/sales-upload":
                 result = sync_uploaded_sales_report(payload.get("fileName", ""), payload.get("data", ""))
                 self.send_json(result, 200 if result.get("ok") else 400)
+            elif parsed.path == "/api/refresh-ads-now":
+                result = start_hosted_ads_refresh_now()
+                self.send_json(result, 202 if result.get("ok") else 409)
             else:
                 self.send_json(assistant_payload(
                     payload.get("question", ""),
