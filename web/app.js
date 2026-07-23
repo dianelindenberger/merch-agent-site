@@ -541,12 +541,13 @@ function renderHome() {
         ${[
           ["yesterday", "Yesterday"],
           ["last7", "7 Days"],
+          ["last14", "14 Days"],
           ["last30", "30 Days"],
         ].map(([value, label]) => `
           <button type="button" class="chip ${value === state.homePeriod ? "active" : ""}" data-home-period="${value}">${label}</button>
         `).join("")}
       </div>
-      ${state.homeLoading ? `<section class="card"><div class="sub">Loading ${state.homePeriod === "last30" ? "30-day" : state.homePeriod === "last7" ? "7-day" : "yesterday's"} analysis...</div></section>` : ""}
+      ${state.homeLoading ? `<section class="card"><div class="sub">Loading ${state.homePeriod === "last30" ? "30-day" : state.homePeriod === "last14" ? "14-day" : state.homePeriod === "last7" ? "7-day" : "yesterday's"} analysis...</div></section>` : ""}
       ${sourceNote}
       <section class="hero-card">
         <div class="row">
@@ -554,7 +555,7 @@ function renderHome() {
             <div class="label">All Markets</div>
             <div class="sub">${escapeHtml(reportDate)}</div>
           </div>
-          <span class="chip active">${homeData.period === "yesterday" ? "Yesterday" : homeData.period === "last7" ? "7 Days" : homeData.period === "last30" ? "30 Days" : "Latest"}</span>
+          <span class="chip active">${homeData.period === "yesterday" ? "Yesterday" : homeData.period === "last7" ? "7 Days" : homeData.period === "last14" ? "14 Days" : homeData.period === "last30" ? "30 Days" : "Latest"}</span>
         </div>
         <div class="big-sales">${homeData.sales || 0}</div>
         <div class="metric-grid">
@@ -975,6 +976,7 @@ function adsPeriodLabel(period) {
     today: "Today",
     yesterday: "Yesterday",
     last7: "7 Days",
+    last14: "14 Days",
     last30: "30 Days",
     last60: "60 Days",
     custom: "Custom",
@@ -1067,6 +1069,7 @@ function renderAds() {
         ["today", "Today"],
         ["yesterday", "Yesterday"],
         ["last7", "7 Days"],
+        ["last14", "14 Days"],
         ["last30", "30 Days"],
         ["last60", "60 Days"],
         ["custom", "Custom"],
@@ -1250,6 +1253,13 @@ function auditActionClass(action) {
   return "hold";
 }
 
+function auditPeriodLabel(period) {
+  if (period === "last7") return "7-day";
+  if (period === "last14") return "14-day";
+  if (period === "last30") return "30-day";
+  return period || "latest";
+}
+
 function renderDailyAudit() {
   if (state.dailyAuditLoading && !state.dailyAudit) {
     return `<section class="card"><div class="sub">Loading the latest daily audit...</div></section>`;
@@ -1260,9 +1270,11 @@ function renderDailyAudit() {
 
   const audit = state.dailyAudit || {};
   const recommendations = audit.bidRecommendations || [];
+  const fourteenDayRecommendations = audit.bidRecommendations14Day || [];
   const changes = recommendations.filter((item) => item.action !== "Hold");
   const holds = recommendations.filter((item) => item.action === "Hold");
   const searchTerms = audit.searchTermFindings || [];
+  const fourteenDaySearchTerms = audit.searchTermFindings14Day || [];
   const salesOpportunities = audit.salesPatternOpportunities || [];
   const bidHistory = audit.inferredBidChanges || [];
 
@@ -1281,7 +1293,7 @@ function renderDailyAudit() {
           <div><strong>${holds.length}</strong><span>Hold steady</span></div>
           <div><strong>${searchTerms.length}</strong><span>Search terms</span></div>
         </div>
-        <div class="audit-source sub">Targets: ${escapeHtml(audit.targetSnapshot || "not loaded")} · Search terms: ${escapeHtml(audit.searchTermSnapshot || "pending first import")}${audit.searchTermPeriod ? ` (${escapeHtml(audit.searchTermPeriod === "last7" ? "7-day" : "30-day")})` : ""}</div>
+        <div class="audit-source sub">Targets: ${escapeHtml(audit.targetSnapshot || "not loaded")} · 14-day targets: ${escapeHtml(audit.targetSnapshot14Day || "pending first import")} · Search terms: ${escapeHtml(audit.searchTermSnapshot || "pending first import")}${audit.searchTermPeriod ? ` (${escapeHtml(auditPeriodLabel(audit.searchTermPeriod))})` : ""}</div>
         ${audit.targetDataStale ? `<div class="audit-stale-warning">Target data is ${audit.targetReportDate ? `only current through ${escapeHtml(audit.targetReportDate)}` : "missing a report date"}. Refresh before acting on these bid suggestions.</div>` : ""}
       </section>
 
@@ -1309,6 +1321,31 @@ function renderDailyAudit() {
 
       <section class="card audit-section">
         <div class="row">
+          <div>
+            <h2 class="section-title">14-day bid actions</h2>
+            <div class="sub">A fresher middle view for campaigns you have already changed recently.</div>
+          </div>
+          <span class="label">${fourteenDayRecommendations.length}</span>
+        </div>
+        ${fourteenDayRecommendations.length ? fourteenDayRecommendations.slice(0, 20).map((item) => `
+          <article class="audit-action ${auditActionClass(item.action)}">
+            <div class="audit-action-head">
+              <span class="audit-action-label">${escapeHtml(item.action)}</span>
+              <span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)} confidence</span>
+            </div>
+            <strong>${escapeHtml(item.campaignName)}</strong>
+            <div class="audit-target">${escapeHtml(item.target)}${item.matchType ? ` · ${escapeHtml(item.matchType)}` : ""}</div>
+            <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong><em>${Number(item.changePercent || 0) > 0 ? "+" : ""}${Number(item.changePercent || 0).toFixed(1)}%</em></div>
+            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            <p>${escapeHtml(item.reason)}</p>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
+          </article>
+        `).join("") : `<div class="audit-empty">No 14-day bid changes meet the evidence thresholds yet. This section will fill after the next ad refresh imports 14-day target data.</div>`}
+        ${fourteenDayRecommendations.length > 20 ? `<div class="sub">Showing the 20 highest-priority 14-day actions of ${fourteenDayRecommendations.length}.</div>` : ""}
+      </section>
+
+      <section class="card audit-section">
+        <div class="row">
           <h2 class="section-title">Search-term findings</h2>
           <span class="label">${searchTerms.length}</span>
         </div>
@@ -1321,6 +1358,25 @@ function renderDailyAudit() {
             <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI about this</button>
           </article>
         `).join("") : `<div class="audit-empty">Waiting for the first Amazon search-term report to complete. The checkpointed report will resume during the next refresh.</div>`}
+      </section>
+
+      <section class="card audit-section">
+        <div class="row">
+          <div>
+            <h2 class="section-title">14-day search-term findings</h2>
+            <div class="sub">Recent customer-search behavior, useful after campaign changes.</div>
+          </div>
+          <span class="label">${fourteenDaySearchTerms.length}</span>
+        </div>
+        ${fourteenDaySearchTerms.length ? fourteenDaySearchTerms.slice(0, 15).map((item) => `
+          <article class="search-finding">
+            <div class="audit-action-head"><strong>${escapeHtml(item.searchTerm)}</strong><span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)}</span></div>
+            <div class="sub">${escapeHtml(item.campaignName)}</div>
+            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            <div class="search-action">${escapeHtml(item.action)}</div>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI about this</button>
+          </article>
+        `).join("") : `<div class="audit-empty">This will fill after the next ad refresh imports 14-day search-term data.</div>`}
       </section>
 
       <section class="card audit-section">

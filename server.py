@@ -498,6 +498,7 @@ def royalty_tier_payload():
     period_labels = {
         "last60": "Trailing 60 Days",
         "last30": "Last 30 Days",
+        "last14": "Last 14 Days",
         "last7": "Last 7 Days",
         "yesterday": "Yesterday",
         "unspecified": "Latest Ads Import",
@@ -507,7 +508,7 @@ def royalty_tier_payload():
     cur = conn.cursor()
     cards = []
 
-    for period in ("last60", "last30", "last7", "yesterday", "unspecified"):
+    for period in ("last60", "last30", "last14", "last7", "yesterday", "unspecified"):
         sales = sales_units_for_period(cur, period)
         ads = ad_orders_for_period(cur, period)
 
@@ -585,6 +586,7 @@ def ads_payload(period, custom_start="", custom_end=""):
         "today": (today, today),
         "yesterday": (today - timedelta(days=1), today - timedelta(days=1)),
         "last7": (today - timedelta(days=6), today),
+        "last14": (today - timedelta(days=13), today),
         "last30": (today - timedelta(days=29), today),
         "last60": (today - timedelta(days=59), today),
     }
@@ -1187,8 +1189,8 @@ def home_payload(period):
         if all_rows else None
     )
     summary = []
-    period_labels = {"yesterday": "Yesterday", "last7": "Last 7 days", "last30": "Last 30 days"}
-    period_days = {"yesterday": 1, "last7": 7, "last30": 30}
+    period_labels = {"yesterday": "Yesterday", "last7": "Last 7 days", "last14": "Last 14 days", "last30": "Last 30 days"}
+    period_days = {"yesterday": 1, "last7": 7, "last14": 14, "last30": 30}
     period_label = period_labels.get(period, "Latest period")
     days = period_days.get(period, 1)
 
@@ -1878,10 +1880,14 @@ def assistant_payload(question, history=None, requested_period="last7"):
         "today": "yesterday",
         "yesterday": "yesterday",
         "last7": "last7",
+        "last14": "last14",
         "last30": "last30",
         "last60": "last60",
         "7 days": "last7",
         "7 day": "last7",
+        "14 days": "last14",
+        "14 day": "last14",
+        "two weeks": "last14",
         "30 days": "last30",
         "30 day": "last30",
         "60 days": "last60",
@@ -1894,6 +1900,7 @@ def assistant_payload(question, history=None, requested_period="last7"):
     period_label = {
         "yesterday": "yesterday",
         "last7": "the last 7 days",
+        "last14": "the last 14 days",
         "last30": "the last 30 days",
         "last60": "the trailing 60 days",
     }[analysis_period]
