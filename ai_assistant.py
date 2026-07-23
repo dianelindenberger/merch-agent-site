@@ -37,6 +37,47 @@ except ImportError:  # The rules fallback remains usable before dependencies are
 MAX_TOOL_ROUNDS = 4
 MAX_TOTAL_TOOL_CALLS = 8
 MAX_QUESTION_LENGTH = 4000
+ANSWER_SECTION_LABELS = {
+    "verified_fact": "Verified facts",
+    "calculation": "Calculations",
+    "recommendation": "Recommendation",
+    "inference": "Inference",
+    "unavailable_data": "Unavailable data",
+}
+ANSWER_TEXT_CONFIG = {
+    "verbosity": "low",
+    "format": {
+        "type": "json_schema",
+        "name": "merch_agent_answer",
+        "description": "A concise, evidence-classified Merch Agent answer.",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "sections": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": list(ANSWER_SECTION_LABELS),
+                            },
+                            "bullets": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["type", "bullets"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["sections"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 SYSTEM_INSTRUCTIONS = """You are the private Merch Agent business assistant.
 
@@ -55,6 +96,7 @@ Answer style:
 - For recommendations, include: exact data used, date range, reasoning, confidence, and suggested action.
 - Clearly separate sections labeled Verified facts, Calculations, Recommendation, Inference, and Unavailable data when those categories apply.
 - Every non-conversational answer must include at least one of those classification labels on its own line. Even a one-date or one-metric factual answer must use Verified facts; missing data must use Unavailable data. Markdown heading or bold styling is allowed.
+- Follow the response schema exactly. Put each statement in the correct typed section and write concise plain-text bullet strings without Markdown bullet characters.
 - A calculation must name the verified inputs. An inference must be labeled and must not be phrased as a known cause.
 - A write tool only prepares a pending action. Tell the user exactly what will be written and ask them to reply "confirm".
 - Keep answers concise and readable.
@@ -391,7 +433,7 @@ class ResponsesAssistant:
                     input=input_items,
                     tools=self.tools.schemas(),
                     reasoning={"effort": "low"},
-                    text={"verbosity": "low"},
+                    text=ANSWER_TEXT_CONFIG,
                     max_output_tokens=settings["maxOutputTokens"],
                     store=False,
                     safety_identifier=owner_hash[:64],
@@ -449,9 +491,10 @@ class ResponsesAssistant:
             input_items.extend(tool_outputs)
         if final_response is None:
             raise AssistantUnavailable("The assistant did not complete within the tool limit.")
-        answer = _output_text(final_response)
-        if not answer:
+        raw_answer = _output_text(final_response)
+        if not raw_answer:
             raise AssistantUnavailable("The assistant returned an empty answer.")
+        answer = _render_structured_answer(raw_answer)
         if _requires_grounding(clean_question) and not evidence:
             raise UngroundedAnswer("A factual answer was attempted without Merch Agent data.")
         classifications = _answer_classifications(answer)
@@ -573,3 +616,35 @@ def _answer_classifications(answer: str) -> list[str]:
                     found.append(classification)
                 break
     return found
+
+
+def _render_structured_answer(raw_answer: str) -> str:
+    """Render strict structured output as the existing readable Markdown UI."""
+    try:
+        payload = json.loads(str(raw_answer or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # Retain compatibility with stored/test responses created before
+        # Structured Outputs. The grounding and classification guards below
+        # still validate this legacy text.
+        return str(raw_answer or "").strip()
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("sections"), list):
+        raise UngroundedAnswer("The structured answer did not contain classified sections.")
+    rendered = []
+    for section in payload["sections"]:
+        if not isinstance(section, Mapping):
+            raise UngroundedAnswer("The structured answer contained an invalid section.")
+        section_type = str(section.get("type") or "")
+        label = ANSWER_SECTION_LABELS.get(section_type)
+        bullets = section.get("bullets")
+        if not label or not isinstance(bullets, list):
+            raise UngroundedAnswer("The structured answer contained an invalid classification.")
+        clean_bullets = [
+            str(item).strip().lstrip("-• ").strip()
+            for item in bullets
+            if str(item).strip().lstrip("-• ").strip()
+        ]
+        if clean_bullets:
+            rendered.append(f"## {label}\n" + "\n".join(f"- {item}" for item in clean_bullets))
+    if not rendered:
+        raise UngroundedAnswer("The structured answer did not contain any supported statements.")
+    return "\n\n".join(rendered)
