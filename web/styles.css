@@ -1613,6 +1613,7 @@ svg {
   position: sticky;
   bottom: 88px;
   z-index: 90;
+  isolation: isolate;
   pointer-events: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 48px;
@@ -1622,10 +1623,16 @@ svg {
 }
 
 .prompt-bar input {
+  position: relative;
+  z-index: 1;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 0 16px;
   min-height: 48px;
+  pointer-events: auto;
+  touch-action: manipulation;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .send-button {

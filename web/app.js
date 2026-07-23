@@ -37,6 +37,7 @@ const state = {
   ],
   aiLoading: false,
   aiError: "",
+  aiDraft: "",
   aiScrollToBottom: false,
   aiMode: "audit",
   changeOptions: null,
@@ -1349,7 +1350,7 @@ function renderAskAssistant() {
         ${state.aiError ? `<div class="card"><div class="negative sub">${escapeHtml(state.aiError)}</div></div>` : ""}
       </section>
       <div class="prompt-bar">
-        <input data-ai-input aria-label="Ask the assistant" placeholder="Ask a question or give a command">
+        <input type="text" inputmode="text" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-ai-input aria-label="Ask the assistant" placeholder="Ask a question or give a command" value="${escapeHtml(state.aiDraft)}">
         <button type="button" class="send-button" data-ai-send aria-label="Send question">&#8593;</button>
       </div>
     </div>
@@ -1968,6 +1969,20 @@ function render({ preserveScroll = false } = {}) {
     button.onclick = () => handleRecommendationAction(button);
   });
 
+  document.querySelectorAll("[data-recommendation-toggle]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const actionBody = button.parentElement?.querySelector(".recommendation-action-body");
+      if (!actionBody) return;
+      const willOpen = actionBody.hidden;
+      actionBody.hidden = !willOpen;
+      if (willOpen) state.openRecommendationIds.add(button.dataset.recommendationToggle);
+      else state.openRecommendationIds.delete(button.dataset.recommendationToggle);
+      button.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    });
+  });
+
   const clearRecommendation = document.querySelector("[data-clear-recommendation]");
   if (clearRecommendation) {
     clearRecommendation.onclick = () => {
@@ -2031,9 +2046,16 @@ function render({ preserveScroll = false } = {}) {
   if (aiInput && aiSend) {
     const submitQuestion = () => {
       const question = aiInput.value;
+      state.aiDraft = "";
       aiInput.value = "";
       askAssistant(question);
     };
+    aiInput.addEventListener("input", () => {
+      state.aiDraft = aiInput.value;
+    });
+    aiInput.addEventListener("pointerdown", () => {
+      aiInput.focus();
+    });
     aiSend.addEventListener("click", submitQuestion);
     aiInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -2043,19 +2065,6 @@ function render({ preserveScroll = false } = {}) {
     });
   }
 }
-
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-recommendation-toggle]");
-  if (!button) return;
-  const id = button.dataset.recommendationToggle;
-  const actionBody = button.parentElement?.querySelector(".recommendation-action-body");
-  if (!actionBody) return;
-  const willOpen = actionBody.hidden;
-  actionBody.hidden = !willOpen;
-  if (willOpen) state.openRecommendationIds.add(id);
-  else state.openRecommendationIds.delete(id);
-  button.setAttribute("aria-expanded", willOpen ? "true" : "false");
-});
 
 render();
 loadHomeData();
