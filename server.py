@@ -101,6 +101,7 @@ def ensure_recommendation_interactions_table(conn):
         if name not in columns:
             conn.execute(f"ALTER TABLE recommendation_interactions ADD COLUMN {name} {column_type}")
     conn.execute("UPDATE recommendation_interactions SET date_created = COALESCE(date_created, acted_at, updated_at) WHERE date_created IS NULL")
+    conn.execute("UPDATE recommendation_interactions SET date_completed = COALESCE(date_completed, acted_at) WHERE status = 'Completed' AND date_completed IS NULL")
     conn.commit()
 
 
