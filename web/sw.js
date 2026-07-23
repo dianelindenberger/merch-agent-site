@@ -1,9 +1,9 @@
-const CACHE_NAME = "merch-agent-static-v14";
+const CACHE_NAME = "merch-agent-static-v15";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/styles.css?v=44",
-  "/app.js?v=54",
+  "/styles.css?v=45",
+  "/app.js?v=55",
   "/manifest.webmanifest",
   "/app-icon.svg"
 ];
