@@ -45,7 +45,7 @@ MAX_SALES_UPLOAD_BYTES = 20 * 1024 * 1024
 MERCH_AGENT_IMPORT_TOKEN = os.getenv("MERCH_AGENT_IMPORT_TOKEN", "").strip()
 DAILY_REFRESH_ENABLED = os.getenv("MERCH_AGENT_DAILY_REFRESH_ENABLED", "false").lower() in {"1", "true", "yes"}
 DAILY_REFRESH_TIME = os.getenv("MERCH_AGENT_DAILY_REFRESH_TIME", "06:00")
-AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "12:00,17:00")
+AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "05:30,12:00,17:00")
 EASTERN_TIME = ZoneInfo("America/New_York")
 
 MARKET_NAMES = {
@@ -388,8 +388,8 @@ def scheduled_refresh_jobs(now=None):
     jobs = []
     full_hour, full_minute = parse_refresh_time(DAILY_REFRESH_TIME, (6, 0))
     jobs.append({
-        "label": "full data refresh",
-        "script": "refresh_merch_agent.py",
+        "label": "daily audit",
+        "script": "run_daily_audit.py",
         "scheduled": now.replace(hour=full_hour, minute=full_minute, second=0, microsecond=0),
     })
     for hour, minute in ad_refresh_times():
