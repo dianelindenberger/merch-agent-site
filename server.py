@@ -729,6 +729,57 @@ def latest_sales_import(cur, period):
     return row["import_date"] if row else None
 
 
+def dated_sales_home_payload(cur, period):
+    """Build a Home window from one dated source report, never mixed snapshots."""
+    window_days = {"yesterday": 1, "last7": 7, "last14": 14, "last30": 30}.get(period)
+    if not window_days:
+        return None
+    completed_through = (amazon_reporting_date() - timedelta(days=1)).isoformat()
+    candidates = cur.execute(
+        """
+        SELECT source_file, MAX(sale_date) AS period_end, MIN(sale_date) AS available_start,
+               MAX(import_date) AS imported_at
+        FROM sales_daily
+        WHERE sale_date <= ?
+        GROUP BY source_file
+        ORDER BY
+          CASE WHEN MIN(sale_date) <= date(MAX(sale_date), ?) THEN 1 ELSE 0 END DESC,
+          MAX(sale_date) DESC, MAX(import_date) DESC
+        """,
+        (completed_through, f"-{window_days - 1} days"),
+    ).fetchall()
+    if not candidates:
+        return None
+    selected = candidates[0]
+    period_end = selected["period_end"]
+    period_start = (parse_date(period_end) - timedelta(days=window_days - 1)).isoformat()
+    complete = selected["available_start"] <= period_start
+    params = (selected["source_file"], period_start, period_end)
+    rows = cur.execute(
+        """SELECT title, SUM(purchased) AS purchased, SUM(royalties) AS royalties, SUM(revenue) AS revenue
+           FROM sales_daily WHERE source_file = ? AND sale_date BETWEEN ? AND ?
+           GROUP BY title HAVING SUM(purchased) > 0 ORDER BY SUM(purchased) DESC, SUM(royalties) DESC""",
+        params,
+    ).fetchall()
+    markets = cur.execute(
+        """SELECT market, currency, SUM(purchased) AS units, SUM(cancelled) AS cancelled, SUM(returned) AS returned,
+                  SUM(royalties) AS royalties, SUM(revenue) AS revenue
+           FROM sales_daily WHERE source_file = ? AND sale_date BETWEEN ? AND ?
+           GROUP BY market, currency ORDER BY SUM(purchased) DESC, SUM(royalties) DESC""",
+        params,
+    ).fetchall()
+    products = cur.execute(
+        """SELECT title, market, currency, SUM(purchased) AS units, SUM(royalties) AS royalties, SUM(revenue) AS revenue
+           FROM sales_daily WHERE source_file = ? AND sale_date BETWEEN ? AND ?
+           GROUP BY title, market, currency HAVING SUM(purchased) > 0
+           ORDER BY SUM(purchased) DESC, SUM(royalties) DESC LIMIT 20""",
+        params,
+    ).fetchall()
+    return {"rows": rows, "markets": markets, "products": products, "periodStart": period_start,
+            "periodEnd": period_end, "latestImport": selected["imported_at"], "complete": complete,
+            "availableStart": selected["available_start"]}
+
+
 def latest_table_import(cur, table_name, period):
     row = cur.execute(
         f"""
@@ -1324,6 +1375,49 @@ def weekly_business_briefing():
     }
 
 
+def dated_home_response(period, daily):
+    all_rows = daily["rows"]
+    totals = {
+        "sales": sum(int(row["purchased"] or 0) for row in all_rows),
+        "royalties": money(sum(row["royalties"] or 0 for row in all_rows)),
+        "revenue": money(sum(row["revenue"] or 0 for row in all_rows)),
+    }
+    markets = [{
+        "name": MARKET_NAMES.get(row["market"], row["market"] or "Unknown"), "code": row["market"],
+        "currency": row["currency"], "units": int(row["units"] or 0),
+        "cancelled": int(row["cancelled"] or 0), "returned": int(row["returned"] or 0),
+        "royalties": money(row["royalties"]), "revenue": money(row["revenue"]),
+    } for row in daily["markets"]]
+    products = [{
+        "title": row["title"], "units": int(row["units"] or 0), "royalty": money(row["royalties"]),
+        "revenue": money(row["revenue"]), "market": MARKET_NAMES.get(row["market"], row["market"] or "Unknown"),
+        "currency": row["currency"], "time": daily["periodEnd"],
+    } for row in daily["products"]]
+    royalty_totals = {}
+    for market in markets:
+        currency = (market.get("currency") or "USD").upper()
+        royalty_totals[currency] = money(royalty_totals.get(currency, 0) + market["royalties"])
+    royalty_breakdown = [{"currency": currency, "amount": amount} for currency, amount in sorted(
+        royalty_totals.items(), key=lambda pair: (pair[0] != "USD", pair[0]))]
+    labels = {"yesterday": "Yesterday", "last7": "Last 7 days", "last14": "Last 14 days", "last30": "Last 30 days"}
+    days = {"yesterday": 1, "last7": 7, "last14": 14, "last30": 30}.get(period, 1)
+    label = labels.get(period, "Selected period")
+    summary = []
+    if all_rows:
+        summary.append(f"{all_rows[0]['title']} led {label.lower()} with {int(all_rows[0]['purchased'] or 0)} units.")
+    summary.append(f"{label} produced {totals['sales']} units, averaging {totals['sales'] / days:.1f} per day.")
+    if not daily["complete"]:
+        summary.append(f"This source only contains sales from {daily['availableStart']} forward, so it is not a complete {label.lower()} window.")
+    return {
+        "source": "dated_sales", "period": period, "reportDate": daily["periodEnd"],
+        "periodStart": daily["periodStart"], "periodEnd": daily["periodEnd"], "latestImport": daily["latestImport"],
+        "complete": daily["complete"], "availableStart": daily["availableStart"], "sales": totals["sales"],
+        "royalties": totals["royalties"], "royaltyByCurrency": royalty_breakdown, "revenue": totals["revenue"],
+        "returns": sum(item["returned"] for item in markets), "products": products, "markets": markets,
+        "summary": summary, "summaryPeriod": label, "businessBriefing": weekly_business_briefing(),
+    }
+
+
 def home_payload(period):
     if not DB_PATH.exists():
         return {
@@ -1340,6 +1434,10 @@ def home_payload(period):
 
     conn = connect()
     cur = conn.cursor()
+    daily = dated_sales_home_payload(cur, period)
+    if daily:
+        conn.close()
+        return dated_home_response(period, daily)
     latest_import = latest_sales_import(cur, period)
 
     if not latest_import and period != "all":

@@ -60,8 +60,15 @@ const state = {
 };
 
 if ("serviceWorker" in navigator) {
+  let refreshingForServiceWorker = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!refreshingForServiceWorker) {
+      refreshingForServiceWorker = true;
+      window.location.reload();
+    }
+  });
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {
+    navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => {
       // The app remains fully usable online if a browser does not support service workers.
     });
   });
