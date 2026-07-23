@@ -187,6 +187,18 @@ def import_merch_sales_payload(payload):
         (datetime.now(EASTERN_TIME).isoformat(), file_name, digest, rows_processed, rows_processed, 0, latest_sales_date, source, "success", ""),
     )
     conn.commit(); conn.close()
+    audit_updated = False
+    try:
+        audit_result = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "tools" / "run_daily_audit.py")],
+            cwd=PROJECT_ROOT,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        audit_updated = audit_result.returncode == 0
+    except Exception:
+        audit_updated = False
     return {
         "ok": True,
         "alreadyImported": False,
@@ -196,6 +208,7 @@ def import_merch_sales_payload(payload):
         "newRows": rows_processed,
         "updatedRows": 0,
         "latestSalesDate": latest_sales_date,
+        "auditUpdated": audit_updated,
         "message": "Merch sales report imported successfully.",
         "status": sales_status_payload(),
     }
