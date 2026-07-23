@@ -1598,7 +1598,8 @@ svg {
 .prompt-bar {
   position: sticky;
   bottom: 88px;
-  z-index: 30;
+  z-index: 90;
+  pointer-events: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 48px;
   gap: 9px;

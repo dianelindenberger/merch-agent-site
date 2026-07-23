@@ -1505,6 +1505,7 @@ async function handleRecommendationAction(button) {
     state.activeRecommendation = { recommendationId: id, context };
     state.aiMode = "ask";
     navigateToPage("ai");
+    requestAnimationFrame(() => document.querySelector("[data-ai-input]")?.focus());
     return;
   }
   let reason = "";
