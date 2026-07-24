@@ -62,6 +62,12 @@ AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "05:30,12:00,17:00"
 EASTERN_TIME = ZoneInfo("America/New_York")
 RECOMMENDATION_COOLDOWN_DAYS = max(1, int(os.getenv("MERCH_AGENT_RECOMMENDATION_COOLDOWN_DAYS", "7")))
 RECOMMENDATION_MIN_POST_CHANGE_CLICKS = max(1, int(os.getenv("MERCH_AGENT_RECOMMENDATION_MIN_POST_CHANGE_CLICKS", "20")))
+HOSTED_CURRENT_REFRESH_TIMEOUT_SECONDS = max(
+    1800, int(os.getenv("MERCH_AGENT_CURRENT_REFRESH_TIMEOUT_SECONDS", "7200"))
+)
+HOSTED_FULL_REFRESH_TIMEOUT_SECONDS = max(
+    7200, int(os.getenv("MERCH_AGENT_FULL_REFRESH_TIMEOUT_SECONDS", "28800"))
+)
 
 MARKET_NAMES = {
     ".com": "United States",
@@ -813,7 +819,11 @@ def run_hosted_refresh(label, script):
                 [sys.executable, str(PROJECT_ROOT / "tools" / script)],
                 cwd=PROJECT_ROOT,
                 text=True,
-                timeout=3600,
+                timeout=(
+                    HOSTED_FULL_REFRESH_TIMEOUT_SECONDS
+                    if script == "refresh_amazon_ads.py"
+                    else HOSTED_CURRENT_REFRESH_TIMEOUT_SECONDS
+                ),
                 check=False,
             )
             with HOSTED_REFRESH_STATUS_LOCK:
@@ -837,13 +847,19 @@ def run_hosted_refresh(label, script):
     return True
 
 
-def start_hosted_ads_refresh_now():
+def start_hosted_ads_refresh_now(mode="current"):
+    if mode not in {"current", "full"}:
+        return {"ok": False, "error": "Refresh mode must be current or full."}
     with HOSTED_REFRESH_STATUS_LOCK:
         if HOSTED_REFRESH_STATUS.get("running"):
             return {"ok": False, "running": True, "status": dict(HOSTED_REFRESH_STATUS)}
+    is_full = mode == "full"
     thread = threading.Thread(
         target=run_hosted_refresh,
-        args=("manual current Amazon Ads checkpoint refresh", "refresh_amazon_ads_current.py"),
+        args=(
+            "manual full Amazon Ads refresh" if is_full else "manual current Amazon Ads checkpoint refresh",
+            "refresh_amazon_ads.py" if is_full else "refresh_amazon_ads_current.py",
+        ),
         daemon=True,
     )
     thread.start()
@@ -3771,7 +3787,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
                 result = update_ai_settings(payload)
                 self.send_json(result)
             elif parsed.path == "/api/refresh-ads-now":
-                result = start_hosted_ads_refresh_now()
+                result = start_hosted_ads_refresh_now(str(payload.get("mode", "current")).lower())
                 self.send_json(result, 202 if result.get("ok") else 409)
             else:
                 question = payload.get("question", "")
