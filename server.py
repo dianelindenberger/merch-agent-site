@@ -1013,6 +1013,11 @@ def ads_payload(period, custom_start="", custom_end=""):
     latest_import = latest_table_import(cur, "advertised_products", source_period)
     fallback = False
 
+    if period == "today":
+        today_import = latest_table_import(cur, "advertised_products", "today")
+        if today_import and (not latest_import or today_import > latest_import):
+            source_period = "today"
+            latest_import = today_import
     if not latest_import:
         source_period = period
         latest_import = latest_table_import(cur, "advertised_products", source_period)
