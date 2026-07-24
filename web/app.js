@@ -39,6 +39,7 @@ const state = {
   aiError: "",
   aiDraft: "",
   aiConversationId: "",
+  aiPeriod: "last30",
   aiFocusComposer: false,
   aiScrollToBottom: false,
   aiMode: "audit",
@@ -429,6 +430,8 @@ async function askAssistant(question) {
   state.aiLoading = true;
   state.aiError = "";
   state.aiScrollToBottom = true;
+  const requestedPeriod = assistantPeriodFromQuestion(cleanQuestion);
+  state.aiPeriod = requestedPeriod;
   render();
 
   try {
@@ -438,7 +441,7 @@ async function askAssistant(question) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question: cleanQuestion,
-        period: state.homePeriod,
+        period: requestedPeriod,
         conversationId: state.aiConversationId,
         history: state.aiMessages.slice(-8).map(({ role, text }) => ({ role, text })),
         recommendationContext: state.activeRecommendation?.context || null,
@@ -472,6 +475,21 @@ async function askAssistant(question) {
     state.aiFocusComposer = state.page === "ai" && state.aiMode === "ask";
     render();
   }
+}
+
+function assistantPeriodFromQuestion(question) {
+  const text = String(question || "").toLowerCase();
+  if (/\byesterday\b/.test(text)) return "yesterday";
+  if (/\btoday\b/.test(text)) return "today";
+  if (/\b(?:last|past)\s+60\s+days?\b|\b60[\s-]*day\b/.test(text)) return "last60";
+  if (/\b(?:last|past)\s+30\s+days?\b|\b30[\s-]*day\b|\bthis month\b/.test(text)) return "last30";
+  if (/\b(?:last|past)\s+14\s+days?\b|\b14[\s-]*day\b|\btwo weeks?\b/.test(text)) return "last14";
+  if (/\b(?:last|past)\s+7\s+days?\b|\b7[\s-]*day\b|\b(?:last|past)\s+week\b/.test(text)) return "last7";
+  const recommendationPeriod = state.activeRecommendation?.context?.reportPeriod;
+  if (["today", "yesterday", "last7", "last14", "last30", "last60"].includes(recommendationPeriod)) {
+    return recommendationPeriod;
+  }
+  return state.aiPeriod || "last30";
 }
 
 async function loadChangeOptions() {

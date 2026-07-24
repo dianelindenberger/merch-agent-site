@@ -1850,7 +1850,6 @@ def campaigns_payload(period="last30", search=""):
         """,
         params,
     ).fetchall()
-    conn.close()
 
     campaigns = []
 
@@ -1859,7 +1858,7 @@ def campaigns_payload(period="last30", search=""):
         sales = money(row["sales"])
         orders = int(row["orders"] or 0)
         clicks = int(row["clicks"] or 0)
-        campaigns.append({
+        item = {
             "name": row["campaign_name"],
             "country": row["country"],
             "currency": row["currency"],
@@ -1872,7 +1871,18 @@ def campaigns_payload(period="last30", search=""):
             "acos": round(spend / sales * 100, 1) if sales else 0,
             "reportDate": row["report_date"],
             "status": "performing" if orders and sales / max(spend, 0.01) >= 5 else "review" if spend >= 10 and not orders else "watch",
-        })
+        }
+        product_groups = advertised_product_campaign_groups(cur, item["name"], period)
+        if product_groups:
+            item["impressions"] = sum(group["impressions"] for group in product_groups)
+            item["impressionsSource"] = "advertised_products"
+            item["impressionsReportDate"] = max(
+                (group["reportDate"] for group in product_groups),
+                default=item["reportDate"],
+            )
+        campaigns.append(item)
+
+    conn.close()
 
     return {
         "source": "sqlite",
@@ -1882,6 +1892,79 @@ def campaigns_payload(period="last30", search=""):
         "count": len(campaigns),
         "campaigns": campaigns,
     }
+
+
+def advertised_product_campaign_groups(cur, campaign_name, period):
+    """Return exact-range ad-group metrics from the daily advertised-product report."""
+    days = {
+        "today": 1,
+        "yesterday": 1,
+        "last7": 7,
+        "last14": 14,
+        "last30": 30,
+        "last60": 60,
+    }.get(period)
+    if not days:
+        return []
+
+    source_period = "today" if period == "today" else "last60"
+    latest_import = latest_table_import(cur, "advertised_products", source_period)
+    if not latest_import and source_period == "today":
+        source_period = "last60"
+        latest_import = latest_table_import(cur, "advertised_products", source_period)
+    if not latest_import:
+        return []
+
+    range_end = amazon_reporting_date()
+    if period != "today":
+        range_end -= timedelta(days=1)
+    range_start = range_end - timedelta(days=days - 1)
+    rows = cur.execute(
+        """
+        SELECT
+            COALESCE(ad_group_name, '') AS ad_group_name,
+            SUM(COALESCE(impressions, 0)) AS impressions,
+            SUM(COALESCE(clicks, 0)) AS clicks,
+            SUM(COALESCE(spend, 0)) AS spend,
+            SUM(COALESCE(orders, 0)) AS orders,
+            SUM(COALESCE(sales, 0)) AS sales,
+            MAX(COALESCE(report_date, '')) AS report_date
+        FROM advertised_products
+        WHERE import_date = ?
+          AND COALESCE(report_period, 'unspecified') = ?
+          AND LOWER(campaign_name) = LOWER(?)
+          AND report_date BETWEEN ? AND ?
+        GROUP BY COALESCE(ad_group_name, '')
+        ORDER BY SUM(COALESCE(sales, 0)) DESC,
+                 SUM(COALESCE(orders, 0)) DESC,
+                 SUM(COALESCE(spend, 0)) DESC,
+                 COALESCE(ad_group_name, '')
+        """,
+        (
+            latest_import,
+            source_period,
+            campaign_name,
+            range_start.isoformat(),
+            range_end.isoformat(),
+        ),
+    ).fetchall()
+    groups = []
+    for row in rows:
+        spend = money(row["spend"])
+        sales = money(row["sales"])
+        groups.append({
+            "name": row["ad_group_name"] or "Unassigned ad group",
+            "impressions": int(row["impressions"] or 0),
+            "clicks": int(row["clicks"] or 0),
+            "spend": spend,
+            "orders": int(row["orders"] or 0),
+            "sales": sales,
+            "roas": round(sales / spend, 2) if spend else 0,
+            "acos": round(spend / sales * 100, 1) if sales else 0,
+            "reportDate": row["report_date"] or "",
+            "metricsSource": "advertised_products",
+        })
+    return groups
 
 
 def campaign_detail_payload(campaign_name, period="last30"):
@@ -1907,6 +1990,7 @@ def campaign_detail_payload(campaign_name, period="last30"):
                 target,
                 COALESCE(match_type, '') AS match_type,
                 MAX(COALESCE(bid, 0)) AS bid,
+                SUM(COALESCE(impressions, 0)) AS impressions,
                 SUM(clicks) AS clicks,
                 SUM(spend) AS spend,
                 SUM(orders) AS orders,
@@ -1931,6 +2015,7 @@ def campaign_detail_payload(campaign_name, period="last30"):
                 "target": row["target"] or "Unnamed target",
                 "matchType": row["match_type"],
                 "bid": money(row["bid"]),
+                "impressions": int(row["impressions"] or 0),
                 "clicks": int(row["clicks"] or 0),
                 "spend": spend,
                 "orders": int(row["orders"] or 0),
@@ -1948,6 +2033,7 @@ def campaign_detail_payload(campaign_name, period="last30"):
             {
                 "name": target["adGroupName"],
                 "targetCount": 0,
+                "impressions": 0,
                 "clicks": 0,
                 "spend": 0.0,
                 "orders": 0,
@@ -1955,10 +2041,35 @@ def campaign_detail_payload(campaign_name, period="last30"):
             },
         )
         group["targetCount"] += 1
+        group["impressions"] += target["impressions"]
         group["clicks"] += target["clicks"]
         group["spend"] = money(group["spend"] + target["spend"])
         group["orders"] += target["orders"]
         group["sales"] = money(group["sales"] + target["sales"])
+
+    product_groups = advertised_product_campaign_groups(cur, campaign_name, period)
+    for product_group in product_groups:
+        group = ad_groups_by_name.setdefault(
+            product_group["name"],
+            {
+                "name": product_group["name"],
+                "targetCount": 0,
+                "impressions": 0,
+                "clicks": 0,
+                "spend": 0.0,
+                "orders": 0,
+                "sales": 0.0,
+            },
+        )
+        group.update({
+            "impressions": product_group["impressions"],
+            "clicks": product_group["clicks"],
+            "spend": product_group["spend"],
+            "orders": product_group["orders"],
+            "sales": product_group["sales"],
+            "reportDate": product_group["reportDate"],
+            "metricsSource": product_group["metricsSource"],
+        })
 
     ad_groups = []
     for group in ad_groups_by_name.values():
@@ -2353,7 +2464,7 @@ def change_options_payload():
     }
 
 
-def assistant_payload(question, history=None, requested_period="last7", recommendation_context=None):
+def assistant_payload(question, history=None, requested_period="last30", recommendation_context=None):
     question = (question or "").strip()
     contextual_question = question
     if isinstance(recommendation_context, dict) and recommendation_context:
@@ -3162,7 +3273,7 @@ def hybrid_assistant_payload(
     question,
     conversation_id,
     identity,
-    requested_period="last7",
+    requested_period="last30",
     history=None,
     recommendation_context=None,
 ):
@@ -3408,7 +3519,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
                     question,
                     payload.get("conversationId", ""),
                     f"{AUTH_USERNAME}:{self.headers.get('Authorization', '')}",
-                    payload.get("period", "last7"),
+                    payload.get("period", "last30"),
                     payload.get("history", []),
                     payload.get("recommendationContext"),
                 )

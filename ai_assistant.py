@@ -360,7 +360,7 @@ class ResponsesAssistant:
         conversation_id: str = "",
         owner_hash: str,
         authenticated: bool,
-        default_period: str = "last7",
+        default_period: str = "last30",
     ) -> dict[str, Any]:
         clean_question = str(question or "").strip()
         if not clean_question:
