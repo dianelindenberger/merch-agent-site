@@ -182,7 +182,7 @@ svg {
   overflow-x: hidden;
   overflow-y: auto;
   padding: 0 18px 106px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 
 .content::-webkit-scrollbar {
@@ -1338,8 +1338,7 @@ svg {
 .assistant-thread {
   display: grid;
   gap: 12px;
-  /* Keep the newest answer above the sticky composer and bottom navigation. */
-  padding-bottom: 128px;
+  padding-bottom: 4px;
 }
 
 .assistant-intro {
@@ -1627,16 +1626,14 @@ svg {
 }
 
 .prompt-bar {
-  position: sticky;
-  bottom: 88px;
-  z-index: 90;
-  isolation: isolate;
+  position: static;
+  z-index: 1;
   pointer-events: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 48px;
   gap: 9px;
   padding-top: 10px;
-  background: linear-gradient(180deg, transparent, #fff 30%);
+  background: #fff;
 }
 
 .prompt-bar input,
@@ -1729,10 +1726,6 @@ svg {
     border-right: 1px solid var(--line);
     background: #f8fbfd;
     backdrop-filter: none;
-  }
-
-  .prompt-bar {
-    bottom: 0;
   }
 
   .nav-item {
@@ -1838,9 +1831,6 @@ svg {
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 
-  .prompt-bar {
-    bottom: calc(82px + env(safe-area-inset-bottom));
-  }
 }
 
 @media (max-width: 360px) {

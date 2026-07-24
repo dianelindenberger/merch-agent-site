@@ -1933,8 +1933,19 @@ function render({ preserveScroll = true } = {}) {
     (pendingConfirmation || content.querySelector(".change-thread"))?.scrollIntoView({ block: "center" });
     state.logScrollToBottom = false;
   } else if (state.page === "ai" && state.aiScrollToBottom) {
-    content.scrollTop = content.scrollHeight;
     state.aiScrollToBottom = false;
+    const scrollToNewestAssistantContent = () => {
+      content.scrollTo({
+        top: content.scrollHeight,
+        left: content.scrollLeft,
+        behavior: "auto",
+      });
+    };
+    scrollToNewestAssistantContent();
+    requestAnimationFrame(() => {
+      scrollToNewestAssistantContent();
+      requestAnimationFrame(scrollToNewestAssistantContent);
+    });
   } else if (preserveScroll) {
     content.scrollTop = previousScrollTop;
   } else {

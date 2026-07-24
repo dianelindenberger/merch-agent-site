@@ -595,10 +595,21 @@ def scheduled_refresh_jobs(now=None):
         "script": "run_daily_audit.py",
         "scheduled": now.replace(hour=full_hour, minute=full_minute, second=0, microsecond=0),
     })
-    for hour, minute in ad_refresh_times():
+    ad_times = ad_refresh_times()
+    full_ads_time = min(ad_times)
+    for hour, minute in ad_times:
+        is_full_refresh = (hour, minute) == full_ads_time
         jobs.append({
-            "label": "Amazon Ads checkpoint refresh",
-            "script": "refresh_amazon_ads.py",
+            "label": (
+                "full Amazon Ads refresh"
+                if is_full_refresh
+                else "current Amazon Ads checkpoint refresh"
+            ),
+            "script": (
+                "refresh_amazon_ads.py"
+                if is_full_refresh
+                else "refresh_amazon_ads_current.py"
+            ),
             "scheduled": now.replace(hour=hour, minute=minute, second=0, microsecond=0),
         })
     for job in jobs:
@@ -680,7 +691,7 @@ def start_hosted_ads_refresh_now():
             return {"ok": False, "running": True, "status": dict(HOSTED_REFRESH_STATUS)}
     thread = threading.Thread(
         target=run_hosted_refresh,
-        args=("manual Amazon Ads checkpoint refresh", "refresh_amazon_ads.py"),
+        args=("manual current Amazon Ads checkpoint refresh", "refresh_amazon_ads_current.py"),
         daemon=True,
     )
     thread.start()
@@ -1780,7 +1791,27 @@ def campaigns_payload(period="last30", search=""):
 
     conn = connect()
     cur = conn.cursor()
+    search_text = search.strip().lower()
     latest_import = latest_table_import(cur, "campaigns", period)
+
+    # A campaign with no activity can be omitted from Amazon's newest
+    # performance export. When the user names a campaign, use the newest
+    # snapshot that actually contains that campaign instead of searching only
+    # the newest global batch and incorrectly claiming the campaign is unknown.
+    if search_text:
+        matching_import = cur.execute(
+            """
+            SELECT import_date
+            FROM campaigns
+            WHERE COALESCE(report_period, 'unspecified') = ?
+              AND LOWER(campaign_name) LIKE ?
+            ORDER BY import_date DESC
+            LIMIT 1
+            """,
+            (period, f"%{search_text}%"),
+        ).fetchone()
+        if matching_import:
+            latest_import = matching_import["import_date"]
 
     if not latest_import:
         conn.close()
@@ -1789,9 +1820,9 @@ def campaigns_payload(period="last30", search=""):
     params = [latest_import, period]
     search_filter = ""
 
-    if search.strip():
+    if search_text:
         search_filter = "AND LOWER(campaign_name) LIKE ?"
-        params.append(f"%{search.strip().lower()}%")
+        params.append(f"%{search_text}%")
 
     rows = cur.execute(
         f"""
