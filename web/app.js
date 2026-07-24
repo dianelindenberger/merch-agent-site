@@ -46,6 +46,8 @@ const state = {
   changeOptions: null,
   changeOptionsError: "",
   logCampaign: "",
+  logCampaignPickerOpen: false,
+  logDeferredRender: false,
   logDate: new Date().toLocaleDateString("en-CA"),
   logDescription: "",
   logMessages: [
@@ -62,6 +64,9 @@ const state = {
   aiUsageError: "",
   aiSettingsSaving: false,
   recommendationInteractions: {},
+  recommendationView: "bids",
+  expandedRecommendationId: "",
+  recommendationNotice: "",
   openRecommendationIds: new Set(),
   activeRecommendation: null,
 };
@@ -1420,7 +1425,8 @@ function renderAskAssistant() {
         <section class="card recommendation-context-card">
           <div class="row"><h2 class="section-title">Discussing recommendation</h2><button type="button" class="ask-audit-button" data-clear-recommendation>Close context</button></div>
           <div class="sub">${escapeHtml(state.activeRecommendation.context.campaignName || state.activeRecommendation.context.title || state.activeRecommendation.context.target || "Recommendation")}</div>
-          <div class="sub">${escapeHtml(state.activeRecommendation.context.action || "")}</div>
+          <div class="sub">${escapeHtml(state.activeRecommendation.context.action || "")} · ${escapeHtml(state.activeRecommendation.context.recommendationPeriod || "")} · ${escapeHtml(state.activeRecommendation.context.status || "Proposed")}</div>
+          ${state.activeRecommendation.context.actualActionTaken ? `<div class="recommendation-monitoring-message">You logged: ${escapeHtml(state.activeRecommendation.context.actualActionTaken)}${state.activeRecommendation.context.effectiveChangeDate ? ` on ${escapeHtml(state.activeRecommendation.context.effectiveChangeDate)}` : ""}.</div>` : ""}
         </section>
       ` : ""}
       <div class="chip-row assistant-suggestions">
@@ -1493,6 +1499,17 @@ function auditActionClass(action) {
   return "hold";
 }
 
+function reconciliationLabel(item) {
+  const labels = {
+    confirmed_across_periods: "14 + 30 days agree",
+    short_term_deterioration_long_term_strength: "Recent weakness · long-term strength",
+    insufficient_recent_data: "30-day evidence · recent data sparse",
+    recent_evidence_supersedes_conflicting_older_recommendation: "Recent evidence supersedes older direction",
+    short_term_improvement_supersedes_older_recommendation: "Superseded by recent improvement",
+  };
+  return labels[item.reconciliationResult] || "";
+}
+
 function auditPeriodLabel(period) {
   if (period === "last7") return "7-day";
   if (period === "last14") return "14-day";
@@ -1501,10 +1518,25 @@ function auditPeriodLabel(period) {
 }
 
 function recommendationContext(type, item) {
+  const id = recommendationId(type, item);
+  const interaction = state.recommendationInteractions[id] || {};
+  const reportPeriod = item.recommendationPeriod === "14-day" || type.endsWith("_14")
+    ? "last14"
+    : item.recommendationPeriod === "30-day" || type.endsWith("_30")
+      ? "last30"
+      : state.aiPeriod || "last30";
   return {
+    recommendationId: id,
     recommendationType: type,
+    recommendationPeriod: item.recommendationPeriod || (type.endsWith("_14") ? "14-day" : type.endsWith("_30") ? "30-day" : ""),
+    reportPeriod,
     campaignName: item.campaignName || "",
+    campaignId: item.campaignId || "",
+    adGroupName: item.adGroupName || "",
+    adGroupId: item.adGroupId || "",
     target: item.target || item.searchTerm || item.title || "",
+    targetId: item.targetId || "",
+    country: item.country || "",
     action: item.action || item.pattern || "",
     confidence: item.confidence || item.priority || "",
     supportingMetrics: {
@@ -1521,22 +1553,57 @@ function recommendationContext(type, item) {
     roas: item.roas ?? null,
     reason: item.reason || item.nextStep || "",
     reportDate: item.reportDate || "",
+    periodEvidence: item.periodEvidence || {},
+    reconciliationResult: item.reconciliationResult || "",
+    status: interaction.status || item.status || "Proposed",
+    supersededByRecommendationId: item.supersededByRecommendationId || interaction.supersededByRecommendationId || "",
+    supersedesRecommendationId: item.supersedesRecommendationId || interaction.supersedesRecommendationId || "",
+    actualActionTaken: item.actualActionTaken || interaction.actualActionTaken || interaction.userAction || "",
+    actualPreviousValue: item.actualPreviousValue || interaction.previousValue || "",
+    actualNewValue: item.actualNewValue || interaction.actualNewValue || "",
+    effectiveChangeDate: item.effectiveChangeDate || interaction.effectiveChangeDate || interaction.effectiveAt || "",
+    monitoringUntil: item.monitoringUntil || interaction.monitoringUntil || "",
+    minimumPostChangeClicks: item.minimumPostChangeClicks || interaction.minimumPostChangeClicks || 20,
+    postChangeMetrics: item.postChangeMetrics || interaction.postChangeMetrics || {},
+    notes: item.changeNote || interaction.userNotes || interaction.reason || "",
   };
 }
 
 function recommendationId(type, item) {
-  const context = recommendationContext(type, item);
-  return [type, context.campaignName, context.target, context.action, context.currentBid, context.suggestedBid, context.reportDate].join("|");
+  if (item.recommendationId) return item.recommendationId;
+  return [
+    type,
+    item.campaignName || "",
+    item.target || item.searchTerm || item.title || "",
+    item.action || item.pattern || "",
+    item.currentBid ?? "",
+    item.suggestedBid ?? "",
+    item.reportDate || item.periodEnd || "",
+  ].join("|");
 }
 
 function recommendationStatus(type, item) {
-  return state.recommendationInteractions[recommendationId(type, item)]?.status || "Proposed";
+  return state.recommendationInteractions[recommendationId(type, item)]?.status || item.status || "Proposed";
+}
+
+function recommendationMatchesFilter(type, item) {
+  const status = recommendationStatus(type, item);
+  if (status === "Proposed" || status === "Needs action") return true;
+  if (status !== "Deferred") return false;
+  const reminderAt = state.recommendationInteractions[recommendationId(type, item)]?.reminderAt;
+  return !reminderAt || new Date(reminderAt) <= new Date();
+}
+
+function changeDateTimeValue() {
+  const value = new Date();
+  const offset = value.getTimezoneOffset() * 60000;
+  return new Date(value.getTime() - offset).toISOString().slice(0, 16);
 }
 
 function renderRecommendationActions(type, item) {
   const id = recommendationId(type, item);
   const interaction = state.recommendationInteractions[id];
-  const status = interaction?.status || "Proposed";
+  const status = interaction?.status || item.status || "Proposed";
   return `
     <div class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
       <button type="button" class="recommendation-action-toggle" data-recommendation-open aria-haspopup="dialog">
@@ -1547,12 +1614,22 @@ function renderRecommendationActions(type, item) {
         <div class="recommendation-action-body">
         <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
         <div class="recommendation-actions">
-        <button type="button" class="ask-audit-button" data-recommendation-action="made_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Made Change</button>
-        <button type="button" class="ask-audit-button" data-recommendation-action="ignore" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Ignore</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="log_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Log a Change</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="keep_monitoring" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Keep Monitoring</button>
         <button type="button" class="ask-audit-button" data-recommendation-action="remind_later" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Remind Me Later</button>
-        <button type="button" class="ask-audit-button" data-recommendation-action="discuss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Discuss</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="dismiss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Dismiss</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="discuss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Discuss with AI</button>
         </div>
+        <form class="recommendation-change-form" data-recommendation-change-form hidden>
+          <label>What did you change?<select data-change-what><option>Made the recommended change</option><option>Made a different bid change</option><option>Paused the target or campaign</option><option>Changed budget</option><option>Changed placement adjustment</option><option>Added a negative target or keyword</option><option>Made another change</option><option>No actual settings change, but I reviewed it</option></select></label>
+          <label>Previous value<input data-previous-value value="${escapeHtml(item.currentBid == null ? "" : formatMoney(item.currentBid))}" /></label>
+          <label>New value<input data-new-value value="${escapeHtml(item.suggestedBid == null ? "" : formatMoney(item.suggestedBid))}" /></label>
+          <label>Date and time changed<input type="datetime-local" data-effective-at value="${changeDateTimeValue()}" /></label>
+          <label>Optional note<textarea data-change-note rows="3" placeholder="Describe the actual change or why you reviewed it."></textarea></label>
+          <button type="button" class="ask-audit-button" data-recommendation-action="save_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Save action</button>
+        </form>
         ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
+        ${(item.actualActionTaken || item.changeNote) ? `<div class="recommendation-logged-detail"><strong>Logged change</strong><span>${escapeHtml(item.actualActionTaken || "Change recorded")}${item.actualPreviousValue || item.actualNewValue ? `: ${escapeHtml(item.actualPreviousValue || "—")} → ${escapeHtml(item.actualNewValue || "—")}` : ""}</span>${item.changeNote ? `<small>${escapeHtml(item.changeNote)}</small>` : ""}</div>` : ""}
         </div>
       </dialog>
     </div>
@@ -1561,11 +1638,13 @@ function renderRecommendationActions(type, item) {
 
 function findRecommendation(type, id) {
   const audit = state.dailyAudit || {};
+  const activeBids = audit.activeBidRecommendations || [];
+  const activeSearchTerms = audit.searchTermRecommendations || [];
   const pools = {
-    bid_30: audit.bidRecommendations || [],
-    bid_14: audit.bidRecommendations14Day || [],
-    search_30: audit.searchTermFindings || [],
-    search_14: audit.searchTermFindings14Day || [],
+    bid_30: [...activeBids, ...(audit.bidRecommendations || [])],
+    bid_14: [...activeBids, ...(audit.bidRecommendations14Day || [])],
+    search_30: [...activeSearchTerms, ...(audit.searchTermFindings || [])],
+    search_14: [...activeSearchTerms, ...(audit.searchTermFindings14Day || [])],
     sales_opportunity: audit.salesPatternOpportunities || [],
   };
   return (pools[type] || []).find((item) => recommendationId(type, item) === id);
@@ -1582,10 +1661,15 @@ function reminderDate(choice) {
 async function handleRecommendationAction(button) {
   const type = button.dataset.recommendationType;
   const id = button.dataset.recommendationId;
-  const action = button.dataset.recommendationAction;
+  let action = button.dataset.recommendationAction;
   const item = findRecommendation(type, id);
   if (!item) return;
   const context = recommendationContext(type, item);
+  if (action === "log_change") {
+    const form = button.closest(".recommendation-dialog")?.querySelector("[data-recommendation-change-form]");
+    if (form) form.hidden = false;
+    return;
+  }
   if (action === "discuss") {
     button.closest(".recommendation-dialog")?.close();
     state.activeRecommendation = { recommendationId: id, context };
@@ -1596,11 +1680,31 @@ async function handleRecommendationAction(button) {
   }
   let reason = "";
   let reminderAt = "";
-  let status = "Completed";
-  if (action === "ignore") {
-    reason = window.prompt("Why are you ignoring this recommendation?") || "";
+  let status = "Proposed";
+  let changeWhat = "";
+  let previousValue = "";
+  let newValue = "";
+  let effectiveAt = "";
+  let changeCategory = "";
+  if (action === "save_change") {
+    const dialog = button.closest(".recommendation-dialog");
+    changeWhat = dialog?.querySelector("[data-change-what]")?.value || "";
+    previousValue = dialog?.querySelector("[data-previous-value]")?.value || "";
+    newValue = dialog?.querySelector("[data-new-value]")?.value || "";
+    effectiveAt = dialog?.querySelector("[data-effective-at]")?.value || "";
+    reason = dialog?.querySelector("[data-change-note]")?.value || "";
+    changeCategory = changeWhat.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    status = "Action logged";
+    if (!window.confirm("Save this actual change in Merch Agent? Amazon Ads settings will not be changed.")) return;
+    action = "log_change";
+  } else if (action === "keep_monitoring") {
+    reason = window.prompt("Optional note or future review condition:", "") || "";
+    status = "Monitoring";
+    if (!window.confirm("Keep this recommendation in monitoring?")) return;
+  } else if (action === "dismiss") {
+    reason = window.prompt("Why are you dismissing this recommendation?") || "";
     if (!reason.trim()) return;
-    status = "Ignored";
+    status = "Dismissed";
   } else if (action === "remind_later") {
     const choice = window.prompt("Remind me when? Enter Tomorrow, 3 Days, or 1 Week.", "Tomorrow") || "";
     reminderAt = reminderDate(choice.trim());
@@ -1613,11 +1717,12 @@ async function handleRecommendationAction(button) {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ recommendationId: id, recommendationType: type, action, status, reason, reminderAt, context, campaign: context.campaignName, confidence: context.confidence, supportingMetrics: context.supportingMetrics }),
+    body: JSON.stringify({ recommendationId: id, recommendationType: type, action, status, reason, reminderAt, context, campaign: context.campaignName, confidence: context.confidence, supportingMetrics: context.supportingMetrics, confirmed: true, idempotencyKey: (crypto.randomUUID ? crypto.randomUUID() : `${id}-${Date.now()}`), changeWhat, actualActionTaken: changeWhat, previousValue, newValue, effectiveAt, changeCategory }),
     });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "The recommendation action could not be saved.");
     state.recommendationInteractions[id] = { ...result, context, status, lastAction: action, reason, reminderAt };
+    state.recommendationNotice = `${status} saved.`;
     render({ preserveScroll: true });
   } catch (error) {
     button.disabled = false;
@@ -1625,7 +1730,7 @@ async function handleRecommendationAction(button) {
   }
 }
 
-function renderDailyAudit() {
+function renderDailyAuditLegacy() {
   if (state.dailyAuditLoading && !state.dailyAudit) {
     return `<section class="card"><div class="sub">Loading the latest daily audit...</div></section>`;
   }
@@ -1636,12 +1741,19 @@ function renderDailyAudit() {
   const audit = state.dailyAudit || {};
   const recommendations = audit.bidRecommendations || [];
   const fourteenDayRecommendations = audit.bidRecommendations14Day || [];
-  const changes = recommendations.filter((item) => item.action !== "Hold");
+  const allChanges = recommendations.filter((item) => item.action !== "Hold");
+  const allFourteenDayChanges = fourteenDayRecommendations.filter((item) => item.action !== "Hold");
+  const changes = allChanges.filter((item) => recommendationMatchesFilter("bid_30", item));
+  const filteredFourteenDayRecommendations = allFourteenDayChanges.filter((item) => recommendationMatchesFilter("bid_14", item));
   const holds = recommendations.filter((item) => item.action === "Hold");
   const searchTerms = audit.searchTermFindings || [];
   const fourteenDaySearchTerms = audit.searchTermFindings14Day || [];
   const salesOpportunities = audit.salesPatternOpportunities || [];
   const bidHistory = audit.inferredBidChanges || [];
+  const actedEntries = [...allChanges.map((item) => ({ type: "bid_30", item })), ...allFourteenDayChanges.map((item) => ({ type: "bid_14", item }))]
+    .filter(({ type, item }) => ["Action logged", "Completed", "Monitoring", "Dismissed", "Ignored", "Superseded"].includes(recommendationStatus(type, item)))
+    .sort((a, b) => String(state.recommendationInteractions[recommendationId(b.type, b.item)]?.loggedAt || "").localeCompare(String(state.recommendationInteractions[recommendationId(a.type, a.item)]?.loggedAt || "")))
+    .slice(0, 10);
 
   return `
     <div class="stack audit-workspace">
@@ -1652,6 +1764,9 @@ function renderDailyAudit() {
             <div class="sub">Target: ${Number(audit.targetRoas || 5).toFixed(2)} ROAS / ${Number(audit.targetAcos || 20).toFixed(0)}% ACOS</div>
           </div>
           <span class="status-pill performing">Read only</span>
+        </div>
+        <div class="recommendation-filters" role="group" aria-label="Recommendation filters">
+          ${[["needs_action", "Needs action"], ["monitoring", "Monitoring"], ["made_change", "Made change"], ["deferred", "Deferred"], ["ignored", "Ignored"], ["superseded", "Superseded"], ["all", "All"]].map(([value, label]) => `<button type="button" class="filter-button ${state.recommendationFilter === value ? "active" : ""}" data-recommendation-filter="${value}">${label}</button>`).join("")}
         </div>
         <div class="audit-counts">
           <div><strong>${changes.length}</strong><span>Bid actions</span></div>
@@ -1664,9 +1779,40 @@ function renderDailyAudit() {
         ${audit.targetDataStale ? `<div class="audit-stale-warning">Target data is ${audit.targetReportDate ? `only current through ${escapeHtml(audit.targetReportDate)}` : "missing a report date"}. Refresh before acting on these bid suggestions.</div>` : ""}
       </section>
 
+      <section class="card audit-section bid-14-day">
+        <div class="row">
+          <div>
+            <h2 class="section-title">14-day bid actions</h2>
+            <div class="sub">Recent evidence is shown first and reconciled against the 30-day result.</div>
+          </div>
+          <span class="label">${filteredFourteenDayRecommendations.length}</span>
+        </div>
+        ${filteredFourteenDayRecommendations.length ? filteredFourteenDayRecommendations.slice(0, 20).map((item) => `
+          <article class="audit-action ${auditActionClass(item.action)}">
+            <div class="audit-action-head">
+              <span class="audit-action-label">${escapeHtml(item.action)}</span>
+              <span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)} confidence</span>
+            </div>
+            ${reconciliationLabel(item) ? `<div class="reconciliation-label">${escapeHtml(reconciliationLabel(item))}</div>` : ""}
+            <strong>${escapeHtml(item.campaignName)}</strong>
+            <div class="audit-target">${escapeHtml(item.target)}${item.matchType ? ` · ${escapeHtml(item.matchType)}` : ""}</div>
+            <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong><em>${Number(item.changePercent || 0) > 0 ? "+" : ""}${Number(item.changePercent || 0).toFixed(1)}%</em></div>
+            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            ${item.monitoringMessage ? `<div class="recommendation-monitoring-message">${escapeHtml(item.monitoringMessage)}</div>` : ""}
+            <p>${escapeHtml(item.reason)}</p>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("bid_14", item)}
+          </article>
+        `).join("") : `<div class="audit-empty">No reconciled 14-day bid changes meet the evidence thresholds.</div>`}
+        ${filteredFourteenDayRecommendations.length > 20 ? `<div class="sub">Showing the 20 highest-priority 14-day actions of ${filteredFourteenDayRecommendations.length}.</div>` : ""}
+      </section>
+
       <section class="card audit-section bid-30-day">
         <div class="row">
-          <h2 class="section-title">Recommended bid actions</h2>
+          <div>
+            <h2 class="section-title">30-day bid actions</h2>
+            <div class="sub">Longer-term recommendations remain active when recent data is too sparse to override them.</div>
+          </div>
           <span class="label">${changes.length}</span>
         </div>
         ${changes.length ? changes.slice(0, 20).map((item) => `
@@ -1675,43 +1821,34 @@ function renderDailyAudit() {
               <span class="audit-action-label">${escapeHtml(item.action)}</span>
               <span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)} confidence</span>
             </div>
+            ${reconciliationLabel(item) ? `<div class="reconciliation-label">${escapeHtml(reconciliationLabel(item))}</div>` : ""}
             <strong>${escapeHtml(item.campaignName)}</strong>
             <div class="audit-target">${escapeHtml(item.target)}${item.matchType ? ` · ${escapeHtml(item.matchType)}` : ""}</div>
             <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong><em>${Number(item.changePercent || 0) > 0 ? "+" : ""}${Number(item.changePercent || 0).toFixed(1)}%</em></div>
             <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            ${item.monitoringMessage ? `<div class="recommendation-monitoring-message">${escapeHtml(item.monitoringMessage)}</div>` : ""}
             <p>${escapeHtml(item.reason)}</p>
-            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 30-day bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
             ${renderRecommendationActions("bid_30", item)}
           </article>
-        `).join("") : `<div class="audit-empty">No bid changes meet the evidence thresholds. Holding steady is a valid decision.</div>`}
-        ${changes.length > 20 ? `<div class="sub">Showing the 20 highest-priority actions of ${changes.length}.</div>` : ""}
+        `).join("") : `<div class="audit-empty">No separate 30-day bid changes remain after reconciliation.</div>`}
+        ${changes.length > 20 ? `<div class="sub">Showing the 20 highest-priority 30-day actions of ${changes.length}.</div>` : ""}
       </section>
 
-      <section class="card audit-section bid-14-day">
+      ${state.recommendationFilter === "needs_action" && actedEntries.length ? `
+      <section class="card audit-section recently-acted">
         <div class="row">
           <div>
-            <h2 class="section-title">14-day bid actions</h2>
-            <div class="sub">A fresher middle view for campaigns you have already changed recently.</div>
+            <h2 class="section-title">Recently acted on</h2>
+            <div class="sub">Your logged decisions remain here for review. They are hidden from unresolved actions by default.</div>
           </div>
-          <span class="label">${fourteenDayRecommendations.length}</span>
+          <span class="label">${actedEntries.length}</span>
         </div>
-        ${fourteenDayRecommendations.length ? fourteenDayRecommendations.slice(0, 20).map((item) => `
-          <article class="audit-action ${auditActionClass(item.action)}">
-            <div class="audit-action-head">
-              <span class="audit-action-label">${escapeHtml(item.action)}</span>
-              <span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)} confidence</span>
-            </div>
-            <strong>${escapeHtml(item.campaignName)}</strong>
-            <div class="audit-target">${escapeHtml(item.target)}${item.matchType ? ` · ${escapeHtml(item.matchType)}` : ""}</div>
-            <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong><em>${Number(item.changePercent || 0) > 0 ? "+" : ""}${Number(item.changePercent || 0).toFixed(1)}%</em></div>
-            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
-            <p>${escapeHtml(item.reason)}</p>
-            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
-            ${renderRecommendationActions("bid_14", item)}
-          </article>
-        `).join("") : `<div class="audit-empty">No 14-day bid changes meet the evidence thresholds yet. This section will fill after the next ad refresh imports 14-day target data.</div>`}
-        ${fourteenDayRecommendations.length > 20 ? `<div class="sub">Showing the 20 highest-priority 14-day actions of ${fourteenDayRecommendations.length}.</div>` : ""}
-      </section>
+        ${actedEntries.map(({ type, item }) => {
+          const interaction = state.recommendationInteractions[recommendationId(type, item)] || {};
+          return `<article class="detected-change"><strong>${escapeHtml(item.campaignName)} · ${escapeHtml(item.target)}</strong><span>${escapeHtml(interaction.status || "Action logged")} · ${escapeHtml(interaction.actualActionTaken || interaction.reason || "Decision recorded")}${interaction.loggedAt ? ` · ${escapeHtml(interaction.loggedAt)}` : ""}</span></article>`;
+        }).join("")}
+      </section>` : ""}
 
       <section class="card audit-section search-30-day">
         <div class="row">
@@ -1784,6 +1921,180 @@ function renderDailyAudit() {
         `).join("") : `<div class="audit-empty">No new or accelerating sales pattern currently meets the review threshold.</div>`}
       </section>
 
+      <section class="card soft-card"><div class="sub">${escapeHtml(audit.caveat || "Recommendations are read-only and require review before changes are made in Amazon Ads.")}</div></section>
+    </div>
+  `;
+}
+
+function priorityClass(value) {
+  return String(value || "Low").toLowerCase();
+}
+
+function compactEvidence(label, evidence, role = "context") {
+  const value = evidence || {};
+  return `
+    <div class="period-evidence ${escapeHtml(role)}">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${Number(value.roas || 0).toFixed(2)} ROAS</span>
+      <span>${Number(value.clicks || 0)} clicks</span>
+      <span>${formatMoney(value.spend || 0)} spend</span>
+      <span>${Number(value.orders || 0)} orders</span>
+    </div>
+  `;
+}
+
+function activeRecommendation(type, item) {
+  return item.actionable !== false && recommendationMatchesFilter(type, item);
+}
+
+function renderBidRecommendationCard(item) {
+  const type = item.recommendationType === "bid_30" || item.recommendationPeriod === "30-day" ? "bid_30" : "bid_14";
+  const id = recommendationId(type, item);
+  const expanded = state.expandedRecommendationId === id;
+  const evidence = item.periodEvidence || {};
+  const reason = item.conciseReason || item.reason || "Review the evidence before making a change.";
+  const primary = item.primaryDecision || item.controllingPeriod || item.recommendationPeriod || "14-day";
+  const evidenceCards = primary === "Post-change"
+    ? [
+        compactEvidence("Post-change - primary", evidence["post-change"], "primary"),
+        compactEvidence("14-day context", evidence["14-day"]),
+        compactEvidence("30-day context", evidence["30-day"]),
+      ].join("")
+    : [
+        compactEvidence(primary === "14-day" ? "14-day - primary" : "14-day context", evidence["14-day"], primary === "14-day" ? "primary" : "context"),
+        compactEvidence(primary === "30-day" ? "30-day - primary" : "30-day context", evidence["30-day"], primary === "30-day" ? "primary" : "context"),
+      ].join("");
+  return `
+    <article class="recommendation-card ${auditActionClass(item.action)}" data-recommendation-card="${escapeHtml(id)}">
+      <div class="recommendation-card-head">
+        <span class="priority-badge ${priorityClass(item.priorityLevel)}">${escapeHtml(item.priorityLevel || "Low")}</span>
+        <span class="confidence ${escapeHtml(item.confidence || "medium")}">${escapeHtml(item.confidence || "medium")} confidence</span>
+      </div>
+      <div class="decision-source"><span>Primary decision</span><strong>${escapeHtml(primary)}</strong></div>
+      <strong class="recommendation-title"><span>Decision</span>${escapeHtml(item.action)}</strong>
+      <div class="recommendation-subject"><b>${escapeHtml(item.campaignName || "Campaign")}</b><span>${escapeHtml(item.target || item.placement || "Target")}</span></div>
+      <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong></div>
+      <span class="reconciliation-label">${escapeHtml(item.reconciliationLabel || reconciliationLabel(item) || "Period evidence reviewed")}</span>
+      <p class="recommendation-reason"><b>Reason:</b> ${escapeHtml(reason)}</p>
+      <div class="period-comparison">${evidenceCards}</div>
+      <div class="recommendation-primary-actions">
+        <button type="button" class="compact-action" data-audit-question="${escapeHtml(`Explain this recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI</button>
+        <button type="button" class="compact-action" data-recommendation-open aria-haspopup="dialog">Actions</button>
+        <button type="button" class="compact-action" data-recommendation-details="${escapeHtml(id)}" aria-expanded="${expanded}" aria-controls="details-${escapeHtml(id)}">${expanded ? "Hide details" : "Details"}</button>
+      </div>
+      <div id="details-${escapeHtml(id)}" class="recommendation-details" ${expanded ? "" : "hidden"}>
+        <dl>
+          <div><dt>Marketplace</dt><dd>${escapeHtml(item.country || "Not specified")}</dd></div>
+          <div><dt>Ad group</dt><dd>${escapeHtml(item.adGroupName || "Not specified")}</dd></div>
+          <div><dt>Report date</dt><dd>${escapeHtml(item.reportDate || item.dataEndDate || "Not available")}</dd></div>
+          <div><dt>Recommendation ID</dt><dd>${escapeHtml(id)}</dd></div>
+        </dl>
+        <p><strong>Placement context:</strong> ${escapeHtml(item.placementContext?.summary || "No matching placement evidence is available.")}</p>
+        ${item.placementContext?.reportDate ? `<p class="sub">Placement report through ${escapeHtml(item.placementContext.reportDate)}</p>` : ""}
+        ${item.overrideReason ? `<p><strong>Why 30-day overrides:</strong> ${escapeHtml(item.overrideReason)}</p>` : ""}
+        ${item.monitoringMessage ? `<p>${escapeHtml(item.monitoringMessage)}</p>` : ""}
+      </div>
+      ${renderRecommendationActions(type, item)}
+    </article>
+  `;
+}
+
+function renderSearchRecommendationCard(item) {
+  const type = item.recommendationPeriod === "14-day" ? "search_14" : "search_30";
+  const id = recommendationId(type, item);
+  const expanded = state.expandedRecommendationId === id;
+  return `
+    <article class="recommendation-card search" data-recommendation-card="${escapeHtml(id)}">
+      <div class="recommendation-card-head">
+        <span class="priority-badge ${priorityClass(item.priorityLevel)}">${escapeHtml(item.priorityLevel || "Low")}</span>
+        <span class="confidence ${escapeHtml(item.confidence || "medium")}">${escapeHtml(item.confidence || "medium")} confidence</span>
+      </div>
+      <strong class="recommendation-title">${escapeHtml(item.action)}</strong>
+      <div class="recommendation-subject"><b>“${escapeHtml(item.searchTerm)}”</b><span>${escapeHtml(item.campaignName || "Campaign")}${item.adGroupName ? ` · ${escapeHtml(item.adGroupName)}` : ""}</span></div>
+      <div class="search-metric-row"><span>${item.clicks || 0} clicks</span><span>${formatMoney(item.spend || 0)} spend</span><span>${item.orders || 0} orders</span><span>${formatMoney(item.sales || 0)} sales</span><span>${Number(item.roas || 0).toFixed(2)} ROAS</span></div>
+      <p class="recommendation-reason">${escapeHtml(item.conciseReason || item.reason || `${item.action} based on the selected reporting period.`)}</p>
+      <div class="recommendation-primary-actions">
+        <button type="button" class="compact-action" data-audit-question="${escapeHtml(`Explain search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI</button>
+        <button type="button" class="compact-action" data-recommendation-open aria-haspopup="dialog">Actions</button>
+        <button type="button" class="compact-action" data-recommendation-details="${escapeHtml(id)}" aria-expanded="${expanded}" aria-controls="details-${escapeHtml(id)}">${expanded ? "Hide details" : "Details"}</button>
+      </div>
+      <div id="details-${escapeHtml(id)}" class="recommendation-details" ${expanded ? "" : "hidden"}>
+        <dl>
+          <div><dt>Marketplace</dt><dd>${escapeHtml(item.country || "Not specified")}</dd></div>
+          <div><dt>Date range</dt><dd>${escapeHtml(item.dateRange || item.recommendationPeriod || "Latest report")}</dd></div>
+          <div><dt>Source target</dt><dd>${escapeHtml(item.sourceTarget || "Not specified")}</dd></div>
+          <div><dt>Report date</dt><dd>${escapeHtml(item.reportDate || "Not available")}</dd></div>
+        </dl>
+      </div>
+      ${renderRecommendationActions(type, item)}
+    </article>
+  `;
+}
+
+function renderRecommendationHistory(audit) {
+  const current = [
+    ...(audit.activeBidRecommendations || audit.bidRecommendations || []).map((item) => ({ type: item.recommendationPeriod === "30-day" ? "bid_30" : "bid_14", item })),
+    ...(audit.searchTermRecommendations || audit.searchTermFindings || []).map((item) => ({ type: item.recommendationPeriod === "14-day" ? "search_14" : "search_30", item })),
+    ...(audit.supersededRecommendations || []).map((item) => ({ type: "bid_30", item })),
+  ];
+  const byId = new Map(current.map((entry) => [recommendationId(entry.type, entry.item), entry]));
+  const rows = Object.entries(state.recommendationInteractions)
+    .filter(([, interaction]) => !["Proposed", "Needs action"].includes(interaction.status))
+    .map(([id, interaction]) => {
+      const entry = byId.get(id);
+      const context = interaction.context || entry?.item || {};
+      return { id, interaction, context };
+    });
+  return rows.length ? rows.map(({ id, interaction, context }) => `
+    <article class="history-row">
+      <div><strong>${escapeHtml(context.campaignName || "Recommendation")}</strong><span>${escapeHtml(context.target || context.searchTerm || "")}</span></div>
+      <span class="status-pill">${escapeHtml(interaction.status || "Recorded")}</span>
+      <small>${escapeHtml(interaction.actualActionTaken || interaction.reason || interaction.userNotes || "")}</small>
+    </article>
+  `).join("") : `<div class="audit-empty">No recommendation history has been recorded yet.</div>`;
+}
+
+function renderDailyAudit() {
+  if (state.dailyAuditLoading && !state.dailyAudit) return `<section class="card"><div class="sub">Loading the latest daily audit...</div></section>`;
+  if (state.dailyAuditError) return `<section class="card"><div class="negative sub">${escapeHtml(state.dailyAuditError)}</div></section>`;
+  const audit = state.dailyAudit || {};
+  const bidItems = (audit.activeBidRecommendations || [
+    ...(audit.bidRecommendations14Day || []),
+    ...(audit.bidRecommendations || []),
+  ]).filter((item) => item.action !== "Hold" && activeRecommendation(item.recommendationPeriod === "30-day" ? "bid_30" : "bid_14", item));
+  const searchItems = (audit.searchTermRecommendations || audit.searchTermFindings || [])
+    .filter((item) => activeRecommendation(item.recommendationPeriod === "14-day" ? "search_14" : "search_30", item));
+  return `
+    <div class="stack audit-workspace">
+      <section class="card audit-summary compact">
+        <div class="audit-header-line">
+          <div><h2 class="section-title">Daily campaign audit</h2><span class="sub">Target ${Number(audit.targetRoas || 5).toFixed(2)} ROAS / ${Number(audit.targetAcos || 20).toFixed(0)}% ACOS</span></div>
+          <div class="audit-header-actions"><span class="status-pill performing">Read only</span><button type="button" class="icon-button small" data-refresh-all aria-label="Refresh audit">↻</button></div>
+        </div>
+        <div class="audit-dates"><span>Ads: <b>${escapeHtml(audit.targetReportDate || "not loaded")}</b></span><span>Merch: <b>${escapeHtml(audit.salesDataThrough || "not loaded")}</b></span></div>
+        <details class="settling-note"><summary>ⓘ Yesterday’s conversion data may still be settling.</summary><p>Use the 14-day and 30-day evidence together before making a change.</p></details>
+      </section>
+      <nav class="recommendation-view-tabs" aria-label="Recommendation views">
+        <button type="button" class="${state.recommendationView === "bids" ? "active" : ""}" data-recommendation-view="bids" aria-pressed="${state.recommendationView === "bids"}">Bid Changes</button>
+        <button type="button" class="${state.recommendationView === "search" ? "active" : ""}" data-recommendation-view="search" aria-pressed="${state.recommendationView === "search"}">Search Term Changes</button>
+        <button type="button" class="history-link ${state.recommendationView === "history" ? "active" : ""}" data-recommendation-view="history" aria-pressed="${state.recommendationView === "history"}">History</button>
+      </nav>
+      ${state.recommendationNotice ? `<div class="recommendation-notice" role="status">${escapeHtml(state.recommendationNotice)}</div>` : ""}
+      ${state.recommendationView === "bids" ? `
+        <section class="recommendation-list-section" aria-labelledby="bid-changes-heading">
+          <div class="compact-section-head"><h2 id="bid-changes-heading">Bid Changes</h2><span>${bidItems.length}</span></div>
+          <div class="recommendation-grid">${bidItems.length ? bidItems.map(renderBidRecommendationCard).join("") : `<div class="audit-empty">No active bid changes need attention.</div>`}</div>
+        </section>` : ""}
+      ${state.recommendationView === "search" ? `
+        <section class="recommendation-list-section" aria-labelledby="search-changes-heading">
+          <div class="compact-section-head"><h2 id="search-changes-heading">Search Term Changes</h2><span>${searchItems.length}</span></div>
+          <div class="recommendation-grid">${searchItems.length ? searchItems.map(renderSearchRecommendationCard).join("") : `<div class="audit-empty">No active search-term changes need attention.</div>`}</div>
+        </section>` : ""}
+      ${state.recommendationView === "history" ? `
+        <section class="card audit-section" aria-labelledby="history-heading">
+          <div class="compact-section-head"><h2 id="history-heading">Recommendation History</h2></div>
+          ${renderRecommendationHistory(audit)}
+        </section>` : ""}
       <section class="card soft-card"><div class="sub">${escapeHtml(audit.caveat || "Recommendations are read-only and require review before changes are made in Amazon Ads.")}</div></section>
     </div>
   `;
@@ -1924,6 +2235,10 @@ function renderMore() {
 }
 
 function render({ preserveScroll = true } = {}) {
+  if (state.logCampaignPickerOpen && state.page === "ai" && state.aiMode === "log") {
+    state.logDeferredRender = true;
+    return;
+  }
   const [title, kicker] = pageMeta[state.page];
   document.querySelector(".phone").dataset.page = state.page;
   document.querySelector("#page-title").textContent = title;
@@ -1944,6 +2259,8 @@ function render({ preserveScroll = true } = {}) {
   const previousScrollTop = content.scrollTop;
   const activeAiInput = document.activeElement?.matches("[data-ai-input]");
   const activeAiSelection = activeAiInput ? document.activeElement.selectionStart : null;
+  const activeChangeDescription = document.activeElement?.matches("[data-change-description]");
+  const activeChangeSelection = activeChangeDescription ? document.activeElement.selectionStart : null;
   const pages = { home: renderHome, ads: renderAds, analytics: renderAnalytics, ai: renderAI, more: renderMore };
   content.innerHTML = pages[state.page]();
   if (state.page === "ai" && state.aiMode === "log" && state.logScrollToBottom) {
@@ -2147,6 +2464,22 @@ function render({ preserveScroll = true } = {}) {
     button.onclick = () => handleRecommendationAction(button);
   });
 
+  document.querySelectorAll("[data-recommendation-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.recommendationView = button.dataset.recommendationView || "bids";
+      render({ preserveScroll: true });
+    });
+  });
+
+  document.querySelectorAll("[data-recommendation-details]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.recommendationDetails || "";
+      state.expandedRecommendationId = state.expandedRecommendationId === id ? "" : id;
+      render({ preserveScroll: true });
+      requestAnimationFrame(() => document.querySelector(`[data-recommendation-details="${CSS.escape(id)}"]`)?.focus({ preventScroll: true }));
+    });
+  });
+
   document.querySelectorAll("[data-recommendation-open]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -2157,7 +2490,7 @@ function render({ preserveScroll = true } = {}) {
       const scrollContainer = document.querySelector(".content");
       const scrollTop = scrollContainer?.scrollTop || 0;
       const scrollLeft = scrollContainer?.scrollLeft || 0;
-      const dialog = button.parentElement?.querySelector("[data-recommendation-dialog]");
+      const dialog = button.closest("[data-recommendation-card], .recommendation-interaction")?.querySelector("[data-recommendation-dialog]");
       if (dialog && typeof dialog.showModal === "function") dialog.showModal();
       else dialog?.setAttribute("open", "");
       const restoreScroll = () => {
@@ -2196,9 +2529,24 @@ function render({ preserveScroll = true } = {}) {
 
   const changeCampaign = document.querySelector("[data-change-campaign]");
   if (changeCampaign) {
+    const finishCampaignSelection = () => {
+      state.logCampaignPickerOpen = false;
+      if (state.logDeferredRender) {
+        state.logDeferredRender = false;
+        requestAnimationFrame(() => render());
+      }
+    };
+    changeCampaign.addEventListener("pointerdown", () => {
+      state.logCampaignPickerOpen = true;
+    });
+    changeCampaign.addEventListener("focus", () => {
+      state.logCampaignPickerOpen = true;
+    });
     changeCampaign.addEventListener("change", (event) => {
       state.logCampaign = event.target.value;
+      finishCampaignSelection();
     });
+    changeCampaign.addEventListener("blur", finishCampaignSelection);
   }
 
   const changeDate = document.querySelector("[data-change-date]");
@@ -2212,6 +2560,9 @@ function render({ preserveScroll = true } = {}) {
   if (changeDescription) {
     changeDescription.addEventListener("input", (event) => {
       state.logDescription = event.target.value;
+    });
+    changeDescription.addEventListener("pointerdown", () => {
+      changeDescription.focus();
     });
   }
 
@@ -2265,6 +2616,15 @@ function render({ preserveScroll = true } = {}) {
       nextAiInput.focus();
       if (typeof activeAiSelection === "number" && nextAiInput.setSelectionRange) {
         nextAiInput.setSelectionRange(activeAiSelection, activeAiSelection);
+      }
+    }
+  }
+  if (activeChangeDescription) {
+    const nextChangeDescription = document.querySelector("[data-change-description]");
+    if (nextChangeDescription) {
+      nextChangeDescription.focus();
+      if (typeof activeChangeSelection === "number" && nextChangeDescription.setSelectionRange) {
+        nextChangeDescription.setSelectionRange(activeChangeSelection, activeChangeSelection);
       }
     }
   }

@@ -60,6 +60,8 @@ DAILY_REFRESH_ENABLED = os.getenv("MERCH_AGENT_DAILY_REFRESH_ENABLED", "false").
 DAILY_REFRESH_TIME = os.getenv("MERCH_AGENT_DAILY_REFRESH_TIME", "06:00")
 AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "05:30,12:00,17:00")
 EASTERN_TIME = ZoneInfo("America/New_York")
+RECOMMENDATION_COOLDOWN_DAYS = max(1, int(os.getenv("MERCH_AGENT_RECOMMENDATION_COOLDOWN_DAYS", "7")))
+RECOMMENDATION_MIN_POST_CHANGE_CLICKS = max(1, int(os.getenv("MERCH_AGENT_RECOMMENDATION_MIN_POST_CHANGE_CLICKS", "20")))
 
 MARKET_NAMES = {
     ".com": "United States",
@@ -93,8 +95,13 @@ def market_from_text(text):
 
 SALES_REPORT_COLUMNS = {"Title", "Purchased", "Royalties", "Revenue", "Date"}
 SALES_REPORT_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-RECOMMENDATION_ACTIONS = {"made_change", "ignore", "remind_later", "discuss"}
-RECOMMENDATION_STATUSES = {"Proposed", "Completed", "Deferred", "Ignored"}
+RECOMMENDATION_ACTIONS = {
+    "made_change", "log_change", "ignore", "dismiss", "remind_later", "keep_monitoring", "discuss",
+}
+RECOMMENDATION_STATUSES = {
+    "Proposed", "Completed", "Deferred", "Ignored", "Action logged", "Monitoring", "Dismissed",
+    "Superseded", "Resolved", "Expired",
+}
 
 
 def ensure_recommendation_interactions_table(conn):
@@ -129,12 +136,37 @@ def ensure_recommendation_interactions_table(conn):
         "user_notes": "TEXT",
         "date_created": "TEXT",
         "date_completed": "TEXT",
+        "campaign_id": "TEXT",
+        "ad_group_id": "TEXT",
+        "target_id": "TEXT",
+        "original_recommended_action": "TEXT",
+        "actual_action_taken": "TEXT",
+        "previous_value": "TEXT",
+        "actual_new_value": "TEXT",
+        "change_category": "TEXT",
+        "effective_at": "TEXT",
+        "logged_at": "TEXT",
+        "user_id": "TEXT",
+        "idempotency_key": "TEXT",
+        "subject_key": "TEXT",
+        "superseded_by_recommendation_id": "TEXT",
+        "supersedes_recommendation_id": "TEXT",
+        "related_change_log_id": "INTEGER",
+        "reason_for_status": "TEXT",
+        "reconciliation_result": "TEXT",
+        "effective_change_date": "TEXT",
+        "monitoring_until": "TEXT",
+        "minimum_post_change_clicks": "INTEGER NOT NULL DEFAULT 20",
+        "post_change_metrics": "TEXT",
+        "post_change_data_through": "TEXT",
     }
     for name, column_type in additions.items():
         if name not in columns:
             conn.execute(f"ALTER TABLE recommendation_interactions ADD COLUMN {name} {column_type}")
     conn.execute("UPDATE recommendation_interactions SET date_created = COALESCE(date_created, acted_at, updated_at) WHERE date_created IS NULL")
     conn.execute("UPDATE recommendation_interactions SET date_completed = COALESCE(date_completed, acted_at) WHERE status = 'Completed' AND date_completed IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendation_interactions_idempotency ON recommendation_interactions(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_interactions_status ON recommendation_interactions(status, updated_at)")
     conn.commit()
 
 
@@ -142,7 +174,7 @@ def recommendation_interactions_payload():
     conn = connect()
     ensure_recommendation_interactions_table(conn)
     rows = conn.execute(
-        "SELECT recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at, campaign, confidence, supporting_metrics, user_action, user_notes, date_created, date_completed FROM recommendation_interactions"
+        "SELECT * FROM recommendation_interactions ORDER BY CASE status WHEN 'Proposed' THEN 0 WHEN 'Deferred' THEN 1 WHEN 'Monitoring' THEN 2 WHEN 'Action logged' THEN 3 WHEN 'Ignored' THEN 4 WHEN 'Dismissed' THEN 4 WHEN 'Superseded' THEN 5 ELSE 6 END, COALESCE(updated_at, date_created) DESC"
     ).fetchall()
     conn.close()
     return {
@@ -164,6 +196,27 @@ def recommendation_interactions_payload():
                 "userNotes": row["user_notes"] or row["reason"] or "",
                 "dateCreated": row["date_created"] or row["acted_at"],
                 "dateCompleted": row["date_completed"] or "",
+                "campaignId": row["campaign_id"] or "",
+                "adGroupId": row["ad_group_id"] or "",
+                "targetId": row["target_id"] or "",
+                "originalRecommendedAction": row["original_recommended_action"] or "",
+                "actualActionTaken": row["actual_action_taken"] or "",
+                "previousValue": row["previous_value"] or "",
+                "actualNewValue": row["actual_new_value"] or "",
+                "changeCategory": row["change_category"] or "",
+                "effectiveAt": row["effective_at"] or "",
+                "loggedAt": row["logged_at"] or row["acted_at"],
+                "userId": row["user_id"] or "",
+                "idempotencyKey": row["idempotency_key"] or "",
+                "subjectKey": row["subject_key"] or "",
+                "relatedChangeLogId": row["related_change_log_id"],
+                "reasonForStatus": row["reason_for_status"] or "",
+                "reconciliationResult": row["reconciliation_result"] or "",
+                "effectiveChangeDate": row["effective_change_date"] or row["effective_at"] or "",
+                "monitoringUntil": row["monitoring_until"] or "",
+                "minimumPostChangeClicks": int(row["minimum_post_change_clicks"] or 20),
+                "postChangeMetrics": json.loads(row["post_change_metrics"] or "{}"),
+                "postChangeDataThrough": row["post_change_data_through"] or "",
             }
             for row in rows
         }
@@ -171,62 +224,150 @@ def recommendation_interactions_payload():
 
 
 def save_recommendation_interaction(payload):
-    recommendation_id = str(payload.get("recommendationId", "")).strip()
+    recommendation_id = str(payload.get("recommendationId", "")).strip()[:240]
     recommendation_type = str(payload.get("recommendationType", "")).strip()[:80]
     action = str(payload.get("action", "")).strip()
-    status = str(payload.get("status", "Proposed")).strip()
     if not recommendation_id or not recommendation_type or action not in RECOMMENDATION_ACTIONS:
         return {"ok": False, "error": "A valid recommendation and action are required."}
-    if status not in RECOMMENDATION_STATUSES:
-        return {"ok": False, "error": "Invalid recommendation status."}
+    if action != "discuss" and payload.get("confirmed") is not True:
+        return {"ok": False, "error": "Explicit confirmation is required before saving this action."}
+
     context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     now = datetime.now(EASTERN_TIME).isoformat()
-    reason = str(payload.get("reason", "")).strip()[:2000]
+    reason = str(payload.get("reason", "") or payload.get("note", "")).strip()[:2000]
     reminder_at = str(payload.get("reminderAt", "")).strip()[:80]
     campaign = str(payload.get("campaign") or context.get("campaignName") or "").strip()[:240]
     confidence = str(payload.get("confidence") or context.get("confidence") or "").strip()[:40]
     supporting_metrics = payload.get("supportingMetrics") if isinstance(payload.get("supportingMetrics"), dict) else context.get("supportingMetrics", {})
-    date_completed = now if status == "Completed" else ""
+    campaign_id = str(payload.get("campaignId") or context.get("campaignId") or "").strip()[:240]
+    ad_group_id = str(payload.get("adGroupId") or context.get("adGroupId") or "").strip()[:240]
+    target_id = str(payload.get("targetId") or context.get("targetId") or "").strip()[:240]
+    original_action = str(payload.get("originalRecommendedAction") or context.get("action") or "").strip()[:120]
+    actual_action = str(payload.get("actualActionTaken") or payload.get("changeWhat") or action).strip()[:240]
+    previous_value = str(payload.get("previousValue", "") or "").strip()[:120]
+    actual_new_value = str(payload.get("newValue", "") or payload.get("actualNewValue", "") or "").strip()[:120]
+    change_category = str(payload.get("changeCategory", "") or "").strip()[:120]
+    effective_at = str(payload.get("effectiveAt", "") or now).strip()[:80]
+    try:
+        effective_date = datetime.fromisoformat(effective_at.replace("Z", "+00:00")).date()
+    except ValueError:
+        return {"ok": False, "error": "The effective change date and time is invalid."}
+    monitoring_until = (effective_date + timedelta(days=RECOMMENDATION_COOLDOWN_DAYS)).isoformat()
+    user_id = str(payload.get("userId", "web-user") or "web-user").strip()[:240]
+    subject_key = "|".join(str(value or "") for value in (
+        context.get("marketplace") or context.get("country") or "",
+        campaign_id or campaign,
+        ad_group_id,
+        target_id or context.get("target") or "",
+        original_action,
+        context.get("metric") or "",
+    ))[:1000]
+    idempotency_key = str(payload.get("idempotencyKey", "") or "").strip()[:240]
+    if not idempotency_key:
+        idempotency_key = hashlib.sha256(json.dumps({
+            "recommendationId": recommendation_id, "action": action, "effectiveAt": effective_at,
+            "previousValue": previous_value, "newValue": actual_new_value, "note": reason,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    status = {
+        "made_change": "Action logged", "log_change": "Action logged", "keep_monitoring": "Monitoring",
+        "ignore": "Ignored", "dismiss": "Dismissed", "remind_later": "Deferred",
+    }.get(action, "Proposed")
+    review_only = actual_action.lower().startswith("no actual settings change") or change_category.startswith("no_actual_settings_change")
+    if action in {"made_change", "log_change"} and review_only:
+        status = "Monitoring"
+    if action == "discuss":
+        return {"ok": True, "recommendationId": recommendation_id, "status": "Proposed", "lastAction": "discuss"}
+
     conn = connect()
-    ensure_recommendation_interactions_table(conn)
-    existing = conn.execute(
-        "SELECT date_created, acted_at FROM recommendation_interactions WHERE recommendation_id = ?",
-        (recommendation_id,),
-    ).fetchone()
-    date_created = (existing["date_created"] or existing["acted_at"]) if existing else now
-    conn.execute(
-        """
-        INSERT INTO recommendation_interactions
-        (recommendation_id, recommendation_type, recommendation_context, status, last_action, reason, reminder_at, acted_at, updated_at, campaign, confidence, supporting_metrics, user_action, user_notes, date_created, date_completed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(recommendation_id) DO UPDATE SET
-          recommendation_type=excluded.recommendation_type,
-          recommendation_context=excluded.recommendation_context,
-          status=excluded.status,
-          last_action=excluded.last_action,
-          reason=excluded.reason,
-          reminder_at=excluded.reminder_at,
-          acted_at=excluded.acted_at,
-          updated_at=excluded.updated_at,
-          campaign=excluded.campaign,
-          confidence=excluded.confidence,
-          supporting_metrics=excluded.supporting_metrics,
-          user_action=excluded.user_action,
-          user_notes=excluded.user_notes,
-          date_completed=CASE WHEN excluded.status = 'Completed' THEN excluded.date_completed ELSE recommendation_interactions.date_completed END
-        """,
-        (recommendation_id, recommendation_type, json.dumps(context), status, action, reason, reminder_at, now, now, campaign, confidence, json.dumps(supporting_metrics), action, reason, date_created, date_completed),
-    )
-    conn.commit()
-    conn.close()
-    return {"ok": True, "recommendationId": recommendation_id, "status": status, "lastAction": action, "actedAt": now, "reminderAt": reminder_at, "reason": reason, "dateCreated": date_created, "dateCompleted": date_completed, "campaign": campaign, "confidence": confidence, "supportingMetrics": supporting_metrics, "userAction": action, "userNotes": reason}
+    try:
+        ensure_recommendation_interactions_table(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        duplicate = conn.execute(
+            "SELECT * FROM recommendation_interactions WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if duplicate:
+            conn.commit()
+            return {
+                "ok": True, "duplicate": True, "recommendationId": duplicate["recommendation_id"],
+                "status": duplicate["status"], "lastAction": duplicate["last_action"],
+                "effectiveAt": duplicate["effective_at"] or "", "loggedAt": duplicate["logged_at"] or duplicate["acted_at"],
+            }
+        existing = conn.execute(
+            "SELECT date_created, acted_at, user_notes FROM recommendation_interactions WHERE recommendation_id = ?",
+            (recommendation_id,),
+        ).fetchone()
+        date_created = (existing["date_created"] or existing["acted_at"]) if existing else now
+        prior_notes = existing["user_notes"] if existing and existing["user_notes"] else ""
+        combined_notes = "\n".join(part for part in (prior_notes, reason) if part).strip()[:4000]
+        date_completed = now if status in {"Completed", "Resolved"} else ""
+        change_log_id = None
+        if action in {"made_change", "log_change"} and not review_only:
+            ensure_campaign_change_schema(conn.cursor())
+            change = conn.execute(
+                """INSERT INTO campaign_change_log
+                   (campaign_name, change_type, details, previous_value, new_value, logged_at,
+                    campaign_id, ad_group_id, target_id, recommendation_id, change_category,
+                    effective_at, user_id, idempotency_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (campaign, "ai_recorded_user_change", reason, previous_value, actual_new_value, now,
+                 campaign_id, ad_group_id, target_id, recommendation_id, change_category, effective_at, user_id, idempotency_key),
+            )
+            change_log_id = change.lastrowid
+        conn.execute(
+            """INSERT INTO recommendation_interactions
+               (recommendation_id, recommendation_type, recommendation_context, status, last_action,
+                reason, reminder_at, acted_at, updated_at, campaign, confidence, supporting_metrics,
+                user_action, user_notes, date_created, date_completed, campaign_id, ad_group_id,
+                target_id, original_recommended_action, actual_action_taken, previous_value,
+                actual_new_value, change_category, effective_at, logged_at, user_id, idempotency_key,
+                subject_key, related_change_log_id, reason_for_status, effective_change_date,
+                monitoring_until, minimum_post_change_clicks)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(recommendation_id) DO UPDATE SET
+                 recommendation_type=excluded.recommendation_type, recommendation_context=excluded.recommendation_context,
+                 status=excluded.status, last_action=excluded.last_action, reason=excluded.reason,
+                 reminder_at=excluded.reminder_at, acted_at=excluded.acted_at, updated_at=excluded.updated_at,
+                 campaign=excluded.campaign, confidence=excluded.confidence, supporting_metrics=excluded.supporting_metrics,
+                 user_action=excluded.user_action, user_notes=excluded.user_notes, date_completed=excluded.date_completed,
+                 campaign_id=excluded.campaign_id, ad_group_id=excluded.ad_group_id, target_id=excluded.target_id,
+                 original_recommended_action=excluded.original_recommended_action, actual_action_taken=excluded.actual_action_taken,
+                 previous_value=excluded.previous_value, actual_new_value=excluded.actual_new_value,
+                 change_category=excluded.change_category, effective_at=excluded.effective_at, logged_at=excluded.logged_at,
+                 user_id=excluded.user_id, idempotency_key=excluded.idempotency_key, subject_key=excluded.subject_key,
+                 related_change_log_id=excluded.related_change_log_id, reason_for_status=excluded.reason_for_status,
+                 effective_change_date=excluded.effective_change_date, monitoring_until=excluded.monitoring_until,
+                 minimum_post_change_clicks=excluded.minimum_post_change_clicks""",
+            (recommendation_id, recommendation_type, json.dumps(context), status, action, reason, reminder_at, now, now,
+             campaign, confidence, json.dumps(supporting_metrics), actual_action, combined_notes, date_created, date_completed,
+             campaign_id, ad_group_id, target_id, original_action, actual_action, previous_value, actual_new_value,
+             change_category, effective_at, now, user_id, idempotency_key, subject_key, change_log_id,
+             reason or ("Change logged" if status == "Action logged" else ""), effective_at,
+             monitoring_until, RECOMMENDATION_MIN_POST_CHANGE_CLICKS),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {
+        "ok": True, "duplicate": False, "recommendationId": recommendation_id, "status": status,
+        "lastAction": action, "actedAt": now, "effectiveAt": effective_at, "loggedAt": now,
+        "reminderAt": reminder_at, "reason": reason, "dateCreated": date_created, "dateCompleted": date_completed,
+        "campaign": campaign, "confidence": confidence, "supportingMetrics": supporting_metrics,
+        "userAction": actual_action, "userNotes": combined_notes, "changeCategory": change_category,
+        "previousValue": previous_value, "actualNewValue": actual_new_value, "relatedChangeLogId": change_log_id,
+        "monitoringUntil": monitoring_until, "minimumPostChangeClicks": RECOMMENDATION_MIN_POST_CHANGE_CLICKS,
+    }
 
 
 def recommendation_history_context(limit=30):
     conn = connect()
     ensure_recommendation_interactions_table(conn)
     rows = conn.execute(
-        "SELECT recommendation_id, recommendation_type, campaign, confidence, supporting_metrics, status, user_action, user_notes, date_created, date_completed FROM recommendation_interactions ORDER BY COALESCE(updated_at, date_created) DESC LIMIT ?",
+        "SELECT * FROM recommendation_interactions ORDER BY COALESCE(updated_at, date_created) DESC LIMIT ?",
         (limit,),
     ).fetchall()
     conn.close()
@@ -247,6 +388,17 @@ def recommendation_history_context(limit=30):
             "userNotes": row["user_notes"] or "",
             "dateCreated": row["date_created"] or "",
             "dateCompleted": row["date_completed"] or "",
+            "actualActionTaken": row["actual_action_taken"] or row["user_action"] or "",
+            "previousValue": row["previous_value"] or "",
+            "actualNewValue": row["actual_new_value"] or "",
+            "effectiveChangeDate": row["effective_change_date"] or row["effective_at"] or "",
+            "loggedAt": row["logged_at"] or row["acted_at"] or "",
+            "subjectKey": row["subject_key"] or "",
+            "supersededByRecommendationId": row["superseded_by_recommendation_id"] or "",
+            "supersedesRecommendationId": row["supersedes_recommendation_id"] or "",
+            "relatedChangeLogId": row["related_change_log_id"],
+            "reasonForStatus": row["reason_for_status"] or "",
+            "reconciliationResult": row["reconciliation_result"] or "",
         })
     return history
 
@@ -743,7 +895,19 @@ def ensure_campaign_change_schema(cur):
         """
     )
     columns = {row["name"] for row in cur.execute("PRAGMA table_info(campaign_change_log)").fetchall()}
-    for name in ("target_name", "effective_date", "summary"):
+    for name in (
+        "target_name",
+        "effective_date",
+        "summary",
+        "campaign_id",
+        "ad_group_id",
+        "target_id",
+        "recommendation_id",
+        "change_category",
+        "effective_at",
+        "user_id",
+        "idempotency_key",
+    ):
         if name not in columns:
             cur.execute(f"ALTER TABLE campaign_change_log ADD COLUMN {name} TEXT")
 
@@ -1189,26 +1353,92 @@ def analytics_start_date(period, end_date):
     return end_date - timedelta(days=29)
 
 
+def choose_analytics_source(candidates, period, custom_start="", custom_end=""):
+    """Choose one dated report that can actually support the requested chart."""
+    if not candidates:
+        return None
+
+    if period == "Custom":
+        requested_start = parse_date(custom_start)
+        requested_end = parse_date(custom_end)
+        covering = [
+            candidate
+            for candidate in candidates
+            if parse_date(candidate["min_date"])
+            and parse_date(candidate["max_date"])
+            and parse_date(candidate["min_date"]) <= requested_start
+            and parse_date(candidate["max_date"]) >= requested_end
+        ]
+        if covering:
+            return max(
+                covering,
+                key=lambda item: (
+                    item["import_date"] or "",
+                    -int(item["date_count"] or 0),
+                ),
+            )
+
+    required_days = {"7D": 7, "30D": 30, "90D": 90, "1Y": 365}.get(period, 30)
+    sufficient = [
+        candidate
+        for candidate in candidates
+        if int(candidate["date_count"] or 0) >= required_days
+    ]
+    if sufficient:
+        return max(
+            sufficient,
+            key=lambda item: (
+                item["max_date"] or "",
+                -int(item["date_count"] or 0),
+                item["import_date"] or "",
+            ),
+        )
+
+    return max(
+        candidates,
+        key=lambda item: (
+            int(item["date_count"] or 0),
+            item["max_date"] or "",
+            item["import_date"] or "",
+        ),
+    )
+
+
 def analytics_payload(period, custom_start="", custom_end=""):
     if not DB_PATH.exists():
         return {"source": "missing_database", "period": period, "points": []}
 
+    if period == "Custom":
+        start_date = parse_date(custom_start)
+        last_date = parse_date(custom_end)
+        if not start_date or not last_date or start_date > last_date:
+            return {
+                "source": "invalid_range",
+                "period": period,
+                "points": [],
+                "error": "Choose a valid Analytics start and end date.",
+            }
+
     conn = connect()
     cur = conn.cursor()
     try:
-        source = cur.execute(
+        candidates = cur.execute(
             """
             SELECT source_file, MAX(import_date) AS import_date,
                    COUNT(DISTINCT sale_date) AS date_count,
                    MIN(sale_date) AS min_date, MAX(sale_date) AS max_date
             FROM sales_daily
             GROUP BY source_file
-            ORDER BY MAX(sale_date) DESC, COUNT(DISTINCT sale_date) DESC, MAX(import_date) DESC
-            LIMIT 1
             """
-        ).fetchone()
+        ).fetchall()
     except sqlite3.OperationalError:
-        source = None
+        candidates = []
+    source = choose_analytics_source(
+        candidates,
+        period,
+        custom_start,
+        custom_end,
+    )
 
     if source:
         rows = cur.execute(
@@ -1253,14 +1483,6 @@ def analytics_payload(period, custom_start="", custom_end=""):
     if period == "Custom":
         start_date = parse_date(custom_start)
         last_date = parse_date(custom_end)
-        if not start_date or not last_date or start_date > last_date:
-            conn.close()
-            return {
-                "source": "invalid_range",
-                "period": period,
-                "points": [],
-                "error": "Choose a valid Analytics start and end date.",
-            }
     elif points:
         last_date = available_end or date.today()
         start_date = analytics_start_date(period, last_date)
@@ -2629,7 +2851,12 @@ def assistant_payload(question, history=None, requested_period="last30", recomme
                 for item in top_bids
             ])
         if top_search:
-            parts.append("Then review search terms: " + "; ".join(f"{item['searchTerm']} — {item['action']}" for item in top_search) + ".")
+            parts.append("Then review search terms: " + "; ".join(
+                f"{item['searchTerm']} in {item['campaignName']}"
+                + (f" / {item.get('adGroupName')}" if item.get("adGroupName") else "")
+                + f" — {item['action']}"
+                for item in top_search
+            ) + ".")
         if top_sales:
             parts.append("Sales opportunities to inspect: " + "; ".join(f"{item['title']} — {item['pattern']}" for item in top_sales) + ".")
         if daily_audit.get("targetDataStale"):
@@ -2675,7 +2902,10 @@ def assistant_payload(question, history=None, requested_period="last30", recomme
             evidence.append(f"Search-term report through {matched.get('reportDate') or 'latest'}")
         elif audit_search_terms:
             answer = "The audit found these search terms for review: " + "; ".join(
-                f"{item['searchTerm']} ({item['action']}, {item['roas']:.2f} ROAS)" for item in audit_search_terms[:6]
+                f"{item['searchTerm']} in {item['campaignName']}"
+                + (f" / {item.get('adGroupName')}" if item.get("adGroupName") else "")
+                + f" ({item['action']}, {item['roas']:.2f} ROAS)"
+                for item in audit_search_terms[:6]
             ) + "."
             evidence.append(f"{daily_audit.get('searchTermPeriod') or 'latest'} search-term snapshot")
         else:
@@ -2959,6 +3189,7 @@ def ai_search_terms_provider(campaign="", search="", period="last7", limit=20):
     params.append(limit)
     rows = cur.execute(
         f"""SELECT campaign_name, COALESCE(ad_group_name, '') AS ad_group_name,
+                   COALESCE(country, '') AS country,
                    COALESCE(search_term, '') AS search_term, COALESCE(keyword, '') AS keyword,
                    COALESCE(targeting, '') AS targeting, COALESCE(match_type, '') AS match_type,
                    SUM(COALESCE(impressions, 0)) AS impressions, SUM(COALESCE(clicks, 0)) AS clicks,
@@ -2966,7 +3197,7 @@ def ai_search_terms_provider(campaign="", search="", period="last7", limit=20):
                    SUM(COALESCE(sales, 0)) AS sales, MAX(COALESCE(report_date, '')) AS report_date
             FROM search_terms
             WHERE {' AND '.join(where)}
-            GROUP BY campaign_name, COALESCE(ad_group_name, ''), COALESCE(search_term, ''),
+            GROUP BY campaign_name, COALESCE(ad_group_name, ''), COALESCE(country, ''), COALESCE(search_term, ''),
                      COALESCE(keyword, ''), COALESCE(targeting, ''), COALESCE(match_type, '')
             ORDER BY SUM(COALESCE(sales, 0)) DESC, SUM(COALESCE(orders, 0)) DESC,
                      SUM(COALESCE(spend, 0)) DESC
@@ -2983,6 +3214,7 @@ def ai_search_terms_provider(campaign="", search="", period="last7", limit=20):
         items.append({
             "campaign": row["campaign_name"],
             "adGroup": row["ad_group_name"],
+            "marketplace": row["country"],
             "searchTerm": row["search_term"],
             "keyword": row["keyword"],
             "targeting": row["targeting"],
@@ -3005,10 +3237,26 @@ def ai_search_terms_provider(campaign="", search="", period="last7", limit=20):
 def ai_placements_provider(campaign="", period="last7", limit=20):
     conn = connect()
     cur = conn.cursor()
+    available_periods = [
+        str(row[0] or "")
+        for row in cur.execute(
+            """SELECT DISTINCT COALESCE(report_period, '')
+               FROM placements
+               WHERE COALESCE(report_period, '') != ''
+               ORDER BY report_period"""
+        ).fetchall()
+    ]
     latest_import = latest_table_import(cur, "placements", period)
     if not latest_import:
         conn.close()
-        return {"period": period, "reportDate": "", "placements": []}
+        return {
+            "period": period,
+            "reportDate": "",
+            "availablePeriods": available_periods,
+            "dataAgeDays": None,
+            "stale": True,
+            "placements": [],
+        }
     where = ["import_date = ?", "COALESCE(report_period, 'unspecified') = ?"]
     params = [latest_import, period]
     if campaign:
@@ -3049,7 +3297,18 @@ def ai_placements_provider(campaign="", period="last7", limit=20):
             "sales": sales,
             "roas": round(sales / spend, 2) if spend else 0,
         })
-    return {"period": period, "reportDate": report_date, "placements": items}
+    try:
+        data_age_days = max(0, (amazon_reporting_date() - date.fromisoformat(report_date)).days)
+    except (TypeError, ValueError):
+        data_age_days = None
+    return {
+        "period": period,
+        "reportDate": report_date,
+        "availablePeriods": available_periods,
+        "dataAgeDays": data_age_days,
+        "stale": data_age_days is None or data_age_days > 2,
+        "placements": items,
+    }
 
 
 def build_ai_tool_layer():
@@ -3162,7 +3421,7 @@ def build_ai_tool_layer():
         history_by_id = {item.get("recommendationId"): item for item in history}
 
         def recommendation_with_id(recommendation_type, item):
-            recommendation_id = "|".join(str(value or "") for value in (
+            recommendation_id = item.get("recommendationId") or "|".join(str(value or "") for value in (
                 recommendation_type,
                 item.get("campaignName"),
                 item.get("target") or item.get("searchTerm") or item.get("title"),
@@ -3176,8 +3435,8 @@ def build_ai_tool_layer():
                 **item,
                 "recommendationId": recommendation_id,
                 "recommendationType": recommendation_type,
-                "status": saved.get("status", "Proposed"),
-                "userNotes": saved.get("userNotes", ""),
+                "status": saved.get("status") or item.get("status", "Proposed"),
+                "userNotes": saved.get("userNotes") or item.get("changeNote", ""),
             }
 
         recommendations = []
@@ -3289,6 +3548,7 @@ def hybrid_assistant_payload(
             owner_hash=owner_hash(identity),
             authenticated=authentication_enabled(),
             default_period=requested_period,
+            recommendation_context=recommendation_context,
         )
     except (AssistantUnavailable, UngroundedAnswer, UsageLimitReached, ValueError) as exc:
         if config.mode == "hybrid":

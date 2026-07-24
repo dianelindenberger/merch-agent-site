@@ -173,7 +173,7 @@ class RestrictedAIToolLayer:
             }),
             _schema("query_recommendations", "Get current recommendations and their evidence without generating new recommendations.", {
                 "period": _period_property(),
-                "status": {"type": "string", "enum": ["Proposed", "Completed", "Deferred", "Ignored", "all"]},
+                "status": {"type": "string", "enum": ["Proposed", "Completed", "Deferred", "Ignored", "Action logged", "Monitoring", "Dismissed", "Superseded", "Resolved", "Expired", "all"]},
                 "limit": _limit_property(),
             }),
             _schema("compare_periods", "Compare the same bounded metric set across two supported periods.", {
@@ -259,7 +259,7 @@ class RestrictedAIToolLayer:
         if name == "query_recommendations":
             _reject_unknown(args, {"period", "status", "limit"})
             status = _text(args.get("status") or "all", "status", maximum=20)
-            if status not in {"Proposed", "Completed", "Deferred", "Ignored", "all"}:
+            if status not in {"Proposed", "Completed", "Deferred", "Ignored", "Action logged", "Monitoring", "Dismissed", "Superseded", "Resolved", "Expired", "all"}:
                 raise ToolValidationError("Invalid recommendation status.")
             return {"period": _period(args.get("period")), "status": status, "limit": _limit(args.get("limit"))}
         if name == "compare_periods":
