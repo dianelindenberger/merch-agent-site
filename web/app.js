@@ -67,6 +67,8 @@ const state = {
   recommendationView: "bids",
   expandedRecommendationId: "",
   recommendationNotice: "",
+  recommendationDialogOpen: false,
+  recommendationDeferredRender: false,
   openRecommendationIds: new Set(),
   activeRecommendation: null,
 };
@@ -1638,16 +1640,16 @@ function renderRecommendationActions(type, item) {
 
 function findRecommendation(type, id) {
   const audit = state.dailyAudit || {};
-  const activeBids = audit.activeBidRecommendations || [];
-  const activeSearchTerms = audit.searchTermRecommendations || [];
-  const pools = {
-    bid_30: [...activeBids, ...(audit.bidRecommendations || [])],
-    bid_14: [...activeBids, ...(audit.bidRecommendations14Day || [])],
-    search_30: [...activeSearchTerms, ...(audit.searchTermFindings || [])],
-    search_14: [...activeSearchTerms, ...(audit.searchTermFindings14Day || [])],
-    sales_opportunity: audit.salesPatternOpportunities || [],
-  };
-  return (pools[type] || []).find((item) => recommendationId(type, item) === id);
+  const candidates = [
+    ...(audit.activeBidRecommendations || []),
+    ...(audit.bidRecommendations || []),
+    ...(audit.bidRecommendations14Day || []),
+    ...(audit.searchTermRecommendations || []),
+    ...(audit.searchTermFindings || []),
+    ...(audit.searchTermFindings14Day || []),
+    ...(audit.salesPatternOpportunities || []),
+  ];
+  return candidates.find((item) => item.recommendationId === id || recommendationId(type, item) === id);
 }
 
 function reminderDate(choice) {
@@ -1662,14 +1664,24 @@ async function handleRecommendationAction(button) {
   const type = button.dataset.recommendationType;
   const id = button.dataset.recommendationId;
   let action = button.dataset.recommendationAction;
-  const item = findRecommendation(type, id);
-  if (!item) return;
-  const context = recommendationContext(type, item);
   if (action === "log_change") {
-    const form = button.closest(".recommendation-dialog")?.querySelector("[data-recommendation-change-form]");
-    if (form) form.hidden = false;
+    const dialog = button.closest(".recommendation-dialog");
+    const form = dialog?.querySelector("[data-recommendation-change-form]");
+    if (form) {
+      form.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      requestAnimationFrame(() => {
+        dialog.scrollTo({ top: Math.max(0, form.offsetTop - 12), behavior: "auto" });
+      });
+    }
     return;
   }
+  const item = findRecommendation(type, id);
+  if (!item) {
+    window.alert("This recommendation could not be matched to the current audit. Refresh the audit and try again.");
+    return;
+  }
+  const context = recommendationContext(type, item);
   if (action === "discuss") {
     button.closest(".recommendation-dialog")?.close();
     state.activeRecommendation = { recommendationId: id, context };
@@ -1723,6 +1735,9 @@ async function handleRecommendationAction(button) {
     if (!response.ok || !result.ok) throw new Error(result.error || "The recommendation action could not be saved.");
     state.recommendationInteractions[id] = { ...result, context, status, lastAction: action, reason, reminderAt };
     state.recommendationNotice = `${status} saved.`;
+    button.closest(".recommendation-dialog")?.close();
+    state.recommendationDialogOpen = false;
+    state.recommendationDeferredRender = false;
     render({ preserveScroll: true });
   } catch (error) {
     button.disabled = false;
@@ -2239,6 +2254,10 @@ function render({ preserveScroll = true } = {}) {
     state.logDeferredRender = true;
     return;
   }
+  if (state.recommendationDialogOpen && state.page === "ai" && state.aiMode === "audit") {
+    state.recommendationDeferredRender = true;
+    return;
+  }
   const [title, kicker] = pageMeta[state.page];
   document.querySelector(".phone").dataset.page = state.page;
   document.querySelector("#page-title").textContent = title;
@@ -2472,11 +2491,24 @@ function render({ preserveScroll = true } = {}) {
   });
 
   document.querySelectorAll("[data-recommendation-details]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const id = button.dataset.recommendationDetails || "";
-      state.expandedRecommendationId = state.expandedRecommendationId === id ? "" : id;
-      render({ preserveScroll: true });
-      requestAnimationFrame(() => document.querySelector(`[data-recommendation-details="${CSS.escape(id)}"]`)?.focus({ preventScroll: true }));
+      const scrollContainer = document.querySelector(".content");
+      const scrollTop = scrollContainer?.scrollTop || 0;
+      const scrollLeft = scrollContainer?.scrollLeft || 0;
+      const details = document.getElementById(button.getAttribute("aria-controls"));
+      const expanded = state.expandedRecommendationId !== id;
+      state.expandedRecommendationId = expanded ? id : "";
+      if (details) details.hidden = !expanded;
+      button.setAttribute("aria-expanded", String(expanded));
+      button.textContent = expanded ? "Hide details" : "Details";
+      const restoreScroll = () => {
+        scrollContainer?.scrollTo({ left: scrollLeft, top: scrollTop, behavior: "auto" });
+      };
+      restoreScroll();
+      requestAnimationFrame(restoreScroll);
     });
   });
 
@@ -2491,8 +2523,11 @@ function render({ preserveScroll = true } = {}) {
       const scrollTop = scrollContainer?.scrollTop || 0;
       const scrollLeft = scrollContainer?.scrollLeft || 0;
       const dialog = button.closest("[data-recommendation-card], .recommendation-interaction")?.querySelector("[data-recommendation-dialog]");
-      if (dialog && typeof dialog.showModal === "function") dialog.showModal();
-      else dialog?.setAttribute("open", "");
+      if (dialog) {
+        state.recommendationDialogOpen = true;
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+      }
       const restoreScroll = () => {
         if (!scrollContainer) return;
         scrollContainer.scrollTo({ left: scrollLeft, top: scrollTop, behavior: "auto" });
@@ -2503,7 +2538,19 @@ function render({ preserveScroll = true } = {}) {
   });
 
   document.querySelectorAll("[data-recommendation-dialog-close]").forEach((button) => {
-    button.addEventListener("click", () => button.closest("dialog")?.close());
+    const dialog = button.closest("dialog");
+    const finishDialog = () => {
+      state.recommendationDialogOpen = false;
+      if (state.recommendationDeferredRender) {
+        state.recommendationDeferredRender = false;
+        requestAnimationFrame(() => render({ preserveScroll: true }));
+      }
+    };
+    button.addEventListener("click", () => {
+      dialog?.close();
+      finishDialog();
+    });
+    dialog?.addEventListener("close", finishDialog, { once: true });
   });
 
   const clearRecommendation = document.querySelector("[data-clear-recommendation]");
