@@ -1003,13 +1003,16 @@ def dated_sales_home_payload(cur, period):
 
 
 def latest_table_import(cur, table_name, period):
+    order_by = "import_date DESC"
+    if table_name in {"sales", "sales_market_breakdown"}:
+        order_by = "MAX(COALESCE(report_date, '')) DESC, import_date DESC"
     row = cur.execute(
         f"""
         SELECT import_date
         FROM {table_name}
         WHERE COALESCE(report_period, 'unspecified') = ?
         GROUP BY import_date
-        ORDER BY import_date DESC
+        ORDER BY {order_by}
         LIMIT 1
         """,
         (period,),
@@ -1948,9 +1951,40 @@ def designs_payload(period, market=None, search=""):
     conn = connect()
     cur = conn.cursor()
     latest_import = latest_table_import(cur, "sales_market_breakdown", period)
+    asin_search = search.strip().upper() if re.fullmatch(r"[A-Za-z0-9]{10}", search.strip()) else ""
+    if asin_search:
+        matching_import = cur.execute(
+            """
+            SELECT import_date
+            FROM sales_market_breakdown
+            WHERE COALESCE(report_period, 'unspecified') = ?
+              AND UPPER(COALESCE(asin, '')) = ?
+            GROUP BY import_date
+            ORDER BY MAX(COALESCE(report_date, '')) DESC, import_date DESC
+            LIMIT 1
+            """,
+            (period, asin_search),
+        ).fetchone()
+        if matching_import:
+            latest_import = matching_import["import_date"]
 
     if not latest_import:
         latest_import = latest_table_import(cur, "sales", period)
+        if asin_search:
+            matching_import = cur.execute(
+                """
+                SELECT import_date
+                FROM sales
+                WHERE COALESCE(report_period, 'unspecified') = ?
+                  AND UPPER(COALESCE(asin, '')) = ?
+                GROUP BY import_date
+                ORDER BY MAX(COALESCE(report_date, '')) DESC, import_date DESC
+                LIMIT 1
+                """,
+                (period, asin_search),
+            ).fetchone()
+            if matching_import:
+                latest_import = matching_import["import_date"]
         if not latest_import:
             conn.close()
             return {"source": "empty_database", "period": period, "designs": []}
