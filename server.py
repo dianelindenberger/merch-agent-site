@@ -427,42 +427,141 @@ def ensure_sales_import_runs_table(conn):
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sales_import_runs)").fetchall()}
+    if "audit_updated" not in columns:
+        conn.execute("ALTER TABLE sales_import_runs ADD COLUMN audit_updated INTEGER NOT NULL DEFAULT 0")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sales_downloader_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            expected_sales_date TEXT,
+            observed_sales_date TEXT,
+            message TEXT,
+            details TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ads_refresh_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            script TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            exit_code INTEGER,
+            error TEXT
+        )
+        """
+    )
     conn.commit()
 
 
-def sales_status_payload():
+SALES_DOWNLOADER_STATUSES = {
+    "current",
+    "refreshing",
+    "authentication_required",
+    "download_failed",
+    "import_failed",
+    "waiting_for_computer",
+    "stale",
+}
+
+
+def expected_completed_date(now=None):
+    """Return the most recent completed Amazon 3 AM-to-3 AM reporting date."""
+    return amazon_reporting_date(now or datetime.now(EASTERN_TIME)) - timedelta(days=1)
+
+
+def record_sales_downloader_event(payload):
+    status = str(payload.get("status", "")).strip().lower()
+    if status not in SALES_DOWNLOADER_STATUSES:
+        return {"ok": False, "error": "A valid downloader status is required."}
+    expected = str(payload.get("expectedSalesDate", "")).strip()[:10]
+    observed = str(payload.get("observedSalesDate", "")).strip()[:10]
+    for value in (expected, observed):
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                return {"ok": False, "error": "Sales status dates must use YYYY-MM-DD."}
+    message = str(payload.get("message", "")).strip()[:500]
+    details = payload.get("details")
+    conn = connect()
+    ensure_sales_import_runs_table(conn)
+    conn.execute(
+        """
+        INSERT INTO sales_downloader_events
+        (recorded_at, status, expected_sales_date, observed_sales_date, message, details)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            datetime.now(EASTERN_TIME).isoformat(),
+            status,
+            expected,
+            observed,
+            message,
+            json.dumps(details, ensure_ascii=False)[:4000] if details is not None else "",
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "status": sales_status_payload()}
+
+
+def sales_status_payload(now=None):
+    now = now or datetime.now(EASTERN_TIME)
     conn = connect()
     ensure_sales_import_runs_table(conn)
     row = conn.execute(
         "SELECT * FROM sales_import_runs ORDER BY id DESC LIMIT 1"
     ).fetchone()
+    successful = conn.execute(
+        "SELECT * FROM sales_import_runs WHERE status = 'success' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    event = conn.execute(
+        "SELECT * FROM sales_downloader_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
     through = conn.execute("SELECT MAX(sale_date) FROM sales_daily").fetchone()[0]
     conn.close()
-    if not row:
-        return {
-            "status": "stale",
-            "latestSalesDate": through or "",
-            "lastSuccessfulImport": None,
-            "rowsProcessed": 0,
-            "source": "none",
-            "lastError": "No Merch sales report has been imported yet.",
-        }
+    expected = expected_completed_date(now).isoformat()
     age_days = None
     if through:
         try:
-            age_days = (date.today() - date.fromisoformat(through)).days
+            age_days = (now.date() - date.fromisoformat(through)).days
         except ValueError:
             age_days = None
-    status = "current" if row["status"] == "success" and age_days is not None and age_days <= 1 else "stale"
+    is_current = bool(through and through >= expected)
+    if is_current:
+        status = "current"
+    elif event and event["status"] in SALES_DOWNLOADER_STATUSES:
+        status = event["status"]
+    elif row and row["status"] == "failed":
+        status = "import_failed"
+    else:
+        status = "waiting_for_computer"
+    last_error = ""
+    if event and event["status"] in {"authentication_required", "download_failed", "import_failed"}:
+        last_error = event["message"] or ""
+    elif row and row["status"] == "failed":
+        last_error = row["error"] or ""
     return {
-        "status": status if row["status"] == "success" else "failed",
-        "latestSalesDate": through or row["latest_sales_date"] or "",
-        "lastSuccessfulImport": row["imported_at"] if row["status"] == "success" else "",
-        "rowsProcessed": int(row["rows_processed"] or 0),
-        "newRows": int(row["new_rows"] or 0),
-        "updatedRows": int(row["updated_rows"] or 0),
-        "source": row["source"] or "unknown",
-        "lastError": row["error"] or "",
+        "status": status,
+        "latestSalesDate": through or (successful["latest_sales_date"] if successful else "") or "",
+        "expectedSalesDate": expected,
+        "lastAttemptAt": event["recorded_at"] if event else (row["imported_at"] if row else ""),
+        "lastSuccessfulImport": successful["imported_at"] if successful else "",
+        "rowsProcessed": int(successful["rows_processed"] or 0) if successful else 0,
+        "newRows": int(successful["new_rows"] or 0) if successful else 0,
+        "updatedRows": int(successful["updated_rows"] or 0) if successful else 0,
+        "source": (successful["source"] or "unknown") if successful else "none",
+        "lastError": last_error,
+        "message": event["message"] if event else "",
+        "authenticationRequired": status == "authentication_required",
+        "auditUpdated": bool(successful["audit_updated"]) if successful else False,
         "ageDays": age_days,
     }
 
@@ -530,11 +629,6 @@ def import_merch_sales_payload(payload):
 
     conn = connect()
     ensure_sales_import_runs_table(conn)
-    conn.execute(
-        "INSERT INTO sales_import_runs (imported_at,file_name,file_hash,rows_processed,new_rows,updated_rows,latest_sales_date,source,status,error) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (datetime.now(EASTERN_TIME).isoformat(), file_name, digest, rows_processed, rows_processed, 0, latest_sales_date, source, "success", ""),
-    )
-    conn.commit(); conn.close()
     audit_updated = False
     try:
         audit_result = subprocess.run(
@@ -547,6 +641,22 @@ def import_merch_sales_payload(payload):
         audit_updated = audit_result.returncode == 0
     except Exception:
         audit_updated = False
+    conn = connect()
+    ensure_sales_import_runs_table(conn)
+    conn.execute(
+        """
+        INSERT INTO sales_import_runs
+        (imported_at,file_name,file_hash,rows_processed,new_rows,updated_rows,
+         latest_sales_date,source,status,error,audit_updated)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            datetime.now(EASTERN_TIME).isoformat(), file_name, digest, rows_processed,
+            rows_processed, 0, latest_sales_date, source, "success", "", int(audit_updated),
+        ),
+    )
+    conn.commit()
+    conn.close()
     return {
         "ok": True,
         "alreadyImported": False,
@@ -795,16 +905,108 @@ def daily_refresh_scheduler():
         run_hosted_refresh(job["label"], job["script"])
 
 
-def refresh_status_payload():
+def latest_ads_dataset_dates(conn):
+    datasets = {}
+    queries = {
+        "campaigns": "SELECT MAX(report_date) FROM campaigns",
+        "advertisedProducts": "SELECT MAX(report_date) FROM advertised_products",
+        "targets": "SELECT MAX(report_date) FROM targets",
+        "searchTerms": "SELECT MAX(report_date) FROM search_terms",
+    }
+    for label, sql in queries.items():
+        try:
+            datasets[label] = conn.execute(sql).fetchone()[0] or ""
+        except sqlite3.OperationalError:
+            datasets[label] = ""
+    for period in ("last7", "last14", "last30"):
+        try:
+            datasets[f"placements{period[4:]}"] = conn.execute(
+                "SELECT MAX(report_date) FROM placements WHERE report_period = ?",
+                (period,),
+            ).fetchone()[0] or ""
+        except sqlite3.OperationalError:
+            datasets[f"placements{period[4:]}"] = ""
+    return datasets
+
+
+def refresh_status_payload(now=None):
+    now = now or datetime.now(EASTERN_TIME)
     with HOSTED_REFRESH_STATUS_LOCK:
-        return dict(HOSTED_REFRESH_STATUS)
+        live_status = dict(HOSTED_REFRESH_STATUS)
+    conn = connect()
+    ensure_sales_import_runs_table(conn)
+    latest = conn.execute("SELECT * FROM ads_refresh_runs ORDER BY id DESC LIMIT 1").fetchone()
+    successful = conn.execute(
+        "SELECT * FROM ads_refresh_runs WHERE status = 'success' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    datasets = latest_ads_dataset_dates(conn)
+    conn.close()
+    expected = expected_completed_date(now).isoformat()
+    required = ("campaigns", "advertisedProducts", "targets", "searchTerms", "placements7", "placements14", "placements30")
+    data_current = all(datasets.get(name, "") >= expected for name in required)
+    running = bool(live_status.get("running"))
+    if running:
+        status = "refreshing"
+    elif latest and latest["status"] == "failed" and (not successful or latest["id"] > successful["id"]):
+        status = "failed"
+    elif data_current:
+        status = "current"
+    else:
+        status = "stale"
+    return {
+        "status": status,
+        "running": running,
+        "label": live_status.get("label") or (latest["label"] if latest else ""),
+        "startedAt": live_status.get("startedAt") or (latest["started_at"] if latest else ""),
+        "finishedAt": live_status.get("finishedAt") or (latest["finished_at"] if latest else ""),
+        "lastSuccessfulRefresh": successful["finished_at"] if successful else "",
+        "exitCode": live_status.get("exitCode") if running else (latest["exit_code"] if latest else None),
+        "error": live_status.get("error") or (latest["error"] if latest else ""),
+        "expectedReportDate": expected,
+        "dataThrough": min((datasets.get(name, "") for name in required), default=""),
+        "datasets": datasets,
+    }
+
+
+def data_freshness_payload(now=None):
+    sales = sales_status_payload(now)
+    ads = refresh_status_payload(now)
+    recommendations_current = (
+        sales["status"] == "current"
+        and ads["status"] == "current"
+        and bool(sales.get("auditUpdated"))
+    )
+    dates = [value for value in (sales.get("latestSalesDate"), ads.get("dataThrough")) if value]
+    return {
+        "sales": sales,
+        "ads": ads,
+        "recommendations": {
+            "status": "current" if recommendations_current else "stale",
+            "dataThrough": min(dates) if dates else "",
+            "message": (
+                "Recommendations include current sales and Amazon Ads data."
+                if recommendations_current
+                else "Recommendations are waiting for both current sales and Amazon Ads data."
+            ),
+        },
+    }
 
 
 def run_hosted_refresh(label, script):
     if not HOSTED_REFRESH_LOCK.acquire(blocking=False):
         print(f"Hosted {label} skipped because another refresh is running.", flush=True)
         return False
+    run_id = None
     try:
+        conn = connect()
+        ensure_sales_import_runs_table(conn)
+        cursor = conn.execute(
+            "INSERT INTO ads_refresh_runs (label,script,started_at,status) VALUES (?,?,?,?)",
+            (label, script, datetime.now(EASTERN_TIME).isoformat(), "running"),
+        )
+        run_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
         with HOSTED_REFRESH_STATUS_LOCK:
             HOSTED_REFRESH_STATUS.update({
                 "running": True,
@@ -832,6 +1034,19 @@ def run_hosted_refresh(label, script):
                     "finishedAt": datetime.now(EASTERN_TIME).isoformat(),
                     "exitCode": result.returncode,
                 })
+            conn = connect()
+            ensure_sales_import_runs_table(conn)
+            conn.execute(
+                "UPDATE ads_refresh_runs SET finished_at=?, status=?, exit_code=? WHERE id=?",
+                (
+                    datetime.now(EASTERN_TIME).isoformat(),
+                    "success" if result.returncode == 0 else "failed",
+                    result.returncode,
+                    run_id,
+                ),
+            )
+            conn.commit()
+            conn.close()
             print(f"Hosted {label} finished with exit code {result.returncode}.", flush=True)
         except Exception as exc:
             with HOSTED_REFRESH_STATUS_LOCK:
@@ -841,6 +1056,15 @@ def run_hosted_refresh(label, script):
                     "exitCode": -1,
                     "error": str(exc),
                 })
+            if run_id is not None:
+                conn = connect()
+                ensure_sales_import_runs_table(conn)
+                conn.execute(
+                    "UPDATE ads_refresh_runs SET finished_at=?, status='failed', exit_code=-1, error=? WHERE id=?",
+                    (datetime.now(EASTERN_TIME).isoformat(), str(exc)[:1000], run_id),
+                )
+                conn.commit()
+                conn.close()
             print(f"Hosted {label} failed: {exc}", file=sys.stderr, flush=True)
     finally:
         HOSTED_REFRESH_LOCK.release()
@@ -3699,6 +3923,10 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             self.send_json(sales_status_payload())
             return
 
+        if parsed.path == "/api/data-freshness":
+            self.send_json(data_freshness_payload())
+            return
+
         if parsed.path == "/api/recommendation-interactions":
             self.send_json(recommendation_interactions_payload())
             return
@@ -3786,12 +4014,12 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        allowed_paths = {"/api/assistant", "/api/ai-settings", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales", "/api/recommendation-interaction"}
+        allowed_paths = {"/api/assistant", "/api/ai-settings", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales", "/api/imports/merch-sales-status", "/api/recommendation-interaction"}
         if parsed.path not in allowed_paths:
             self.send_json({"error": "Not found"}, 404)
             return
 
-        if parsed.path == "/api/imports/merch-sales":
+        if parsed.path in {"/api/imports/merch-sales", "/api/imports/merch-sales-status"}:
             if not import_token_is_valid(self.headers.get("Authorization", "")):
                 self.send_json({"error": "A valid Merch sales import token is required."}, 401)
                 return
@@ -3833,6 +4061,12 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
                 self.send_json(result, 200 if result.get("ok") else 400)
             elif parsed.path == "/api/imports/merch-sales":
                 result = import_merch_sales_payload(payload)
+                self.send_json(result, 200 if result.get("ok") else 400)
+            elif parsed.path == "/api/imports/merch-sales-status":
+                if str(payload.get("action", "check")).lower() == "check":
+                    result = {"ok": True, "status": sales_status_payload()}
+                else:
+                    result = record_sales_downloader_event(payload)
                 self.send_json(result, 200 if result.get("ok") else 400)
             elif parsed.path == "/api/recommendation-interaction":
                 result = save_recommendation_interaction(payload)

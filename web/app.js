@@ -60,6 +60,7 @@ const state = {
   salesUploadMessage: "",
   salesUploadError: "",
   salesStatus: null,
+  dataFreshness: null,
   aiUsage: null,
   aiUsageError: "",
   aiSettingsSaving: false,
@@ -306,11 +307,13 @@ async function loadRoyaltyTier() {
 
 async function loadSalesStatus() {
   try {
-    const response = await fetch("/api/sales-status", { cache: "no-store" });
+    const response = await fetch("/api/data-freshness", { cache: "no-store" });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
-    state.salesStatus = await response.json();
+    state.dataFreshness = await response.json();
+    state.salesStatus = state.dataFreshness.sales || null;
   } catch (error) {
-    state.salesStatus = { status: "failed", lastError: "Sales status could not be loaded." };
+    state.dataFreshness = null;
+    state.salesStatus = { status: "download_failed", lastError: "Data freshness could not be loaded." };
   }
   if (state.page === "more") render();
 }
@@ -2139,13 +2142,39 @@ function renderAI() {
 
 function renderMore() {
   const salesStatus = state.salesStatus || {};
-  const salesStatusLabel = salesStatus.status === "current" ? "Current" : salesStatus.status === "failed" ? "Failed" : "Stale";
-  const salesStatusTone = salesStatus.status === "current" ? "performing" : salesStatus.status === "failed" ? "watch" : "review";
+  const freshness = state.dataFreshness || {};
+  const adsStatus = freshness.ads || {};
+  const recommendationStatus = freshness.recommendations || {};
+  const freshnessLabel = (status) => ({
+    current: "Current",
+    refreshing: "Refreshing",
+    authentication_required: "Authentication required",
+    download_failed: "Download failed",
+    import_failed: "Import failed",
+    waiting_for_computer: "Waiting for computer",
+    stale: "Stale",
+    failed: "Failed",
+  }[status] || "Not available");
+  const freshnessTone = (status) => status === "current" ? "performing" : status === "refreshing" ? "watch" : "review";
   const statusRows = [
-    ["Merch sales", salesStatus.latestSalesDate || state.homeData?.reportDate || "Not loaded", "Complete through"],
-    ["Daily analytics", state.analyticsData?.dataThrough || state.analyticsData?.endDate || "Not loaded", "Available through"],
-    ["Amazon Ads", state.adsData?.reportDate || "Not loaded", state.adsData?.partial ? "Includes partial data" : "Report through"],
-    ["Campaign performance", state.campaignsData?.reportDate || "Not loaded", "Report through"],
+    {
+      label: "Amazon Ads",
+      value: adsStatus.dataThrough || "Not loaded",
+      context: `Report through · Last refresh ${adsStatus.lastSuccessfulRefresh || "not recorded"}`,
+      status: adsStatus.status,
+    },
+    {
+      label: "Merch sales",
+      value: salesStatus.latestSalesDate || state.homeData?.reportDate || "Not loaded",
+      context: `Complete through · Last attempt ${salesStatus.lastAttemptAt || "not recorded"}`,
+      status: salesStatus.status,
+    },
+    {
+      label: "Recommendations",
+      value: recommendationStatus.dataThrough || "Not current",
+      context: recommendationStatus.message || "Waiting for current sales and Ads data.",
+      status: recommendationStatus.status,
+    },
   ];
   const usage = state.aiUsage;
   const settings = usage?.settings || {};
@@ -2166,18 +2195,22 @@ function renderMore() {
             <h2 class="section-title">Data Status</h2>
             <div class="sub">Dates shown throughout the app come from these local imports.</div>
           </div>
-          <span class="status-pill ${salesStatusTone}">${salesStatusLabel}</span>
+          <span class="status-pill ${freshnessTone(recommendationStatus.status)}">${freshnessLabel(recommendationStatus.status)}</span>
         </div>
         <div class="status-list">
-          ${statusRows.map(([label, value, context]) => `
+          ${statusRows.map(({ label, value, context, status }) => `
             <div class="status-row">
               <div><div class="title">${escapeHtml(label)}</div><div class="sub">${escapeHtml(context)}</div></div>
-              <strong>${escapeHtml(value)}</strong>
+              <div>
+                <strong>${escapeHtml(value)}</strong>
+                <span class="status-pill ${freshnessTone(status)}">${freshnessLabel(status)}</span>
+              </div>
             </div>
           `).join("")}
         </div>
         <div class="sub">Last successful import: ${escapeHtml(salesStatus.lastSuccessfulImport || "None")}</div>
         <div class="sub">Source: ${escapeHtml(salesStatus.source || "Not available")} | ${Number(salesStatus.rowsProcessed || 0).toLocaleString()} rows processed</div>
+        ${salesStatus.authenticationRequired ? `<div class="negative sub">Amazon Merch login required. Open the dedicated downloader browser profile, complete the login or verification, and then retry the sales refresh.</div>` : ""}
         ${salesStatus.lastError ? `<div class="negative sub">${escapeHtml(salesStatus.lastError)}</div>` : ""}
       </section>
       <button type="button" class="primary-button wide-button" data-refresh-all>Refresh displayed data</button>
