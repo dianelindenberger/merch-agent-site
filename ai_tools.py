@@ -139,7 +139,7 @@ class RestrictedAIToolLayer:
                 "market": {"type": "string", "maxLength": 40},
                 "limit": _limit_property(),
             }),
-            _schema("query_designs", "Get ranked design sales with units and royalty currency breakdown.", {
+            _schema("query_designs", "Get ranked design sales by title or ASIN, with units and royalty currency breakdown.", {
                 "period": _period_property(),
                 "market": {"type": "string", "maxLength": 40},
                 "search": {"type": "string", "maxLength": 160},

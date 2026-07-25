@@ -1941,7 +1941,7 @@ def home_payload(period):
     }
 
 
-def designs_payload(period, market=None):
+def designs_payload(period, market=None, search=""):
     if not DB_PATH.exists():
         return {"source": "missing_database", "period": period, "designs": []}
 
@@ -1955,16 +1955,23 @@ def designs_payload(period, market=None):
             conn.close()
             return {"source": "empty_database", "period": period, "designs": []}
 
+        search_filter = ""
+        search_params = [latest_import, period]
+        if search:
+            search_filter = " AND (LOWER(title) LIKE ? OR UPPER(COALESCE(asin, '')) = ?)"
+            search_params.extend((f"%{search.lower()}%", search.upper()))
         rows = cur.execute(
-            """
-            SELECT title, SUM(purchased) AS units, SUM(royalties) AS royalties,
+            f"""
+            SELECT title, GROUP_CONCAT(DISTINCT NULLIF(asin, '')) AS asins,
+                   SUM(purchased) AS units, SUM(royalties) AS royalties,
                    SUM(revenue) AS revenue, MAX(COALESCE(report_date, '')) AS report_date
             FROM sales
             WHERE import_date = ? AND COALESCE(report_period, 'unspecified') = ?
+                  {search_filter}
             GROUP BY title
             ORDER BY SUM(purchased) DESC, title ASC
             """,
-            (latest_import, period),
+            search_params,
         ).fetchall()
         conn.close()
         return {
@@ -1975,6 +1982,7 @@ def designs_payload(period, market=None):
             "designs": [
                 {
                     "title": row["title"],
+                    "asins": [value for value in str(row["asins"] or "").split(",") if value],
                     "units": int(row["units"] or 0),
                     "royaltiesByCurrency": [{"currency": "USD", "amount": money(row["royalties"])}],
                     "revenueByCurrency": [{"currency": "USD", "amount": money(row["revenue"])}],
@@ -1988,13 +1996,18 @@ def designs_payload(period, market=None):
     if market:
         market_filter = " AND LOWER(COALESCE(market, '')) = ?"
         market_params.append(market.lower())
+    search_filter = ""
+    if search:
+        search_filter = " AND (LOWER(title) LIKE ? OR UPPER(COALESCE(asin, '')) = ?)"
+        market_params.extend((f"%{search.lower()}%", search.upper()))
     rows = cur.execute(
         f"""
         SELECT title, COALESCE(currency, 'USD') AS currency,
+               GROUP_CONCAT(DISTINCT NULLIF(asin, '')) AS asins,
                SUM(purchased) AS units, SUM(royalties) AS royalties,
                SUM(revenue) AS revenue, MAX(COALESCE(report_date, '')) AS report_date
         FROM sales_market_breakdown
-        WHERE import_date = ? AND COALESCE(report_period, 'unspecified') = ?{market_filter}
+        WHERE import_date = ? AND COALESCE(report_period, 'unspecified') = ?{market_filter}{search_filter}
         GROUP BY title, COALESCE(currency, 'USD')
         ORDER BY SUM(purchased) DESC, SUM(royalties) DESC, title ASC, currency ASC
         """,
@@ -2006,8 +2019,17 @@ def designs_payload(period, market=None):
         report_date = max(report_date, row["report_date"] or "")
         design = designs_by_title.setdefault(
             row["title"],
-            {"title": row["title"], "units": 0, "royaltiesByCurrency": [], "revenueByCurrency": []},
+            {
+                "title": row["title"],
+                "asins": [],
+                "units": 0,
+                "royaltiesByCurrency": [],
+                "revenueByCurrency": [],
+            },
         )
+        for asin in str(row["asins"] or "").split(","):
+            if asin and asin not in design["asins"]:
+                design["asins"].append(asin)
         design["units"] += int(row["units"] or 0)
         design["royaltiesByCurrency"].append({
             "currency": row["currency"], "amount": money(row["royalties"])
@@ -3393,10 +3415,8 @@ def build_ai_tool_layer():
 
     def query_designs(period="last7", market="", search="", limit=20):
         market_code = normalized_market_code(market)
-        payload = designs_payload(period, market_code or market or None)
+        payload = designs_payload(period, market_code or market or None, search)
         designs = payload.get("designs", [])
-        if search:
-            designs = [item for item in designs if search.lower() in str(item.get("title", "")).lower()]
         return {
             "period": period,
             "market": market,
