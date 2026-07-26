@@ -58,7 +58,7 @@ MAX_SALES_UPLOAD_BYTES = 20 * 1024 * 1024
 MERCH_AGENT_IMPORT_TOKEN = os.getenv("MERCH_AGENT_IMPORT_TOKEN", "").strip()
 DAILY_REFRESH_ENABLED = os.getenv("MERCH_AGENT_DAILY_REFRESH_ENABLED", "false").lower() in {"1", "true", "yes"}
 DAILY_REFRESH_TIME = os.getenv("MERCH_AGENT_DAILY_REFRESH_TIME", "06:00")
-AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "05:30,12:00,17:00")
+AD_REFRESH_TIMES = os.getenv("MERCH_AGENT_AD_REFRESH_TIMES", "05:30")
 EASTERN_TIME = ZoneInfo("America/New_York")
 RECOMMENDATION_COOLDOWN_DAYS = max(1, int(os.getenv("MERCH_AGENT_RECOMMENDATION_COOLDOWN_DAYS", "7")))
 RECOMMENDATION_MIN_POST_CHANGE_CLICKS = max(1, int(os.getenv("MERCH_AGENT_RECOMMENDATION_MIN_POST_CHANGE_CLICKS", "20")))
@@ -851,7 +851,7 @@ def ad_refresh_times():
         raw_time = raw_time.strip()
         if raw_time:
             times.append(parse_refresh_time(raw_time, (12, 0)))
-    return times or [(12, 0), (17, 0)]
+    return times or [(5, 30)]
 
 
 def scheduled_refresh_jobs(now=None):
