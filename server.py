@@ -3014,15 +3014,22 @@ def change_options_payload():
 
 
 def build_owner_audit_briefing(daily_audit, sales_yesterday, sales_last7, campaigns_last7,
-                               audit_bid_actions, audit_search_terms, audit_sales_opportunities):
+                               audit_bid_actions, audit_search_terms, audit_sales_opportunities,
+                               audit_date=""):
     """Turn the structured audit into a concise business-owner briefing."""
+    # Amazon's completed reporting day is the audit's subject.  Merch sales
+    # can lag that day, so never present the latest imported sales snapshot as
+    # if it belonged to the audit date.
+    audit_date = str(audit_date or "").strip()
+    sales_report_date = str(sales_yesterday.get("reportDate") or "").strip()
+    sales_aligned = bool(audit_date and sales_report_date == audit_date)
     active = [item for item in (daily_audit.get("activeBidRecommendations") or audit_bid_actions)
               if item.get("action") != "Hold"]
     active.sort(key=lambda item: (str(item.get("priority", "medium")).lower() != "high",
                                   -float(item.get("spend", 0) or 0)))
     active = active[:4]
     monitoring = (daily_audit.get("monitoringRecommendations") or [])[:3]
-    yesterday_units = int(sales_yesterday.get("sales") or 0)
+    yesterday_units = int(sales_yesterday.get("sales") or 0) if sales_aligned else 0
     recent_units = int(sales_last7.get("sales") or 0)
     average_units = recent_units / 7 if recent_units else 0
     if average_units and yesterday_units > average_units * 1.15:
@@ -3032,12 +3039,19 @@ def build_owner_audit_briefing(daily_audit, sales_yesterday, sales_last7, campai
     else:
         opening = "Yesterday was generally stable, with no evidence of a broad business deterioration."
 
-    yesterday_royalties = float(sales_yesterday.get("royalties") or 0)
-    parts = [opening, f"Total sales were {yesterday_units} units and approximately ${yesterday_royalties:.2f} in royalties."]
-    winners = (sales_yesterday.get("products") or sales_last7.get("products") or [])[:3]
-    if winners:
-        names = ", ".join(f"{item.get('title', 'Untitled')} ({item.get('units', 0)} units)" for item in winners)
-        parts.append(f"The strongest recent sellers were {names}; protect those winners while reviewing weaker advertising signals.")
+    if sales_aligned:
+        yesterday_royalties = float(sales_yesterday.get("royalties") or 0)
+        parts = [opening, f"Total Merch sales for {audit_date} were {yesterday_units} units and approximately ${yesterday_royalties:.2f} in royalties."]
+        winners = (sales_yesterday.get("products") or [])[:3]
+        if winners:
+            names = ", ".join(f"{item.get('title', 'Untitled')} ({item.get('units', 0)} units)" for item in winners)
+            parts.append(f"The strongest sellers on that date were {names}; protect those winners while reviewing weaker advertising signals.")
+    else:
+        latest_label = sales_report_date or "an earlier date"
+        parts = [
+            f"Yesterday ({audit_date or 'the latest completed Amazon day'}) is the audit subject. Advertising data is available for that day, but the latest Merch sales import only covers {latest_label}; I am not treating those older sales as yesterday's results.",
+            "Sales totals and seller rankings for the audit date will be added when the Merch report reaches that date.",
+        ]
 
     evidence = []
     if active:
@@ -3085,10 +3099,135 @@ def build_owner_audit_briefing(daily_audit, sales_yesterday, sales_last7, campai
     elif not active:
         parts.append("Several decisions are better treated as wait-and-see until the next completed data window.")
 
-    if daily_audit.get("delayedSalesData"):
-        parts.append("Merch sales are delayed, so confidence is based primarily on the available advertising data.")
+    if daily_audit.get("delayedSalesData") or not sales_aligned:
+        parts.append("Merch sales are delayed, so today's conclusions are based primarily on the available advertising data; no older sales snapshot is being relabeled as yesterday.")
     parts.append("**Bottom line:** " + ("Focus on the highest-priority action above." if active else "No major changes are recommended today; continue monitoring recent adjustments."))
     return "\n\n".join(parts), evidence
+
+
+def build_design_auto_campaign_plan(question):
+    """Build a grounded auto-campaign plan for a design, never a name-matched campaign."""
+    normalized = str(question or "").lower()
+    if not ("auto campaign" in normalized or "automatic campaign" in normalized):
+        return None
+    if not any(word in normalized for word in ("build", "create", "advertis", "launch", "recommend")):
+        return None
+    match = re.search(r"\bfor\s+(.+?)(?=(?:\.|,|;|\s+check\s+\d|\s+using\s+\d|$))", str(question or ""), re.IGNORECASE)
+    if not match:
+        return {"answer": "Please provide the exact design title (and ASIN if available) so I can analyze the product rather than a similarly named campaign.", "evidence": []}
+    requested_title = match.group(1).strip(" \"'")
+    if not requested_title:
+        return {"answer": "Please provide the exact design title (and ASIN if available) so I can analyze the product rather than a similarly named campaign.", "evidence": []}
+
+    design30 = designs_payload("last30", search=requested_title).get("designs", [])
+    design60 = designs_payload("last60", search=requested_title).get("designs", [])
+    # Prefer an exact title match; only fall back to the strongest token match
+    # when the imported title has punctuation or spacing differences.
+    candidates = design30 + [item for item in design60 if item not in design30]
+    exact = next((item for item in candidates if str(item.get("title", "")).casefold() == requested_title.casefold()), None)
+    if exact:
+        title = exact["title"]
+    elif candidates:
+        requested_words = {word for word in re.findall(r"[a-z0-9]+", requested_title.casefold()) if len(word) > 2}
+        ranked = sorted(candidates, key=lambda item: len(requested_words & set(re.findall(r"[a-z0-9]+", str(item.get("title", "")).casefold()))), reverse=True)
+        title = ranked[0]["title"]
+    else:
+        return {"answer": f"Unavailable data\n- I could not find a sales design matching \"{requested_title}\" in the imported 30- or 60-day Merch reports. I will not infer an ASIN or recommend bids.", "evidence": []}
+
+    design30 = next((item for item in design30 if item.get("title") == title), {})
+    design60 = next((item for item in design60 if item.get("title") == title), {})
+    asins = list(dict.fromkeys((design30.get("asins") or []) + (design60.get("asins") or [])))
+    if not asins:
+        return {"answer": f"Unavailable data\n- I found the design \"{title}\", but the sales reports do not include an ASIN. I cannot safely connect it to an advertising campaign.", "evidence": [f"Merch sales, last 30 days: {design30.get('reportDate') or 'no report date'}", f"Merch sales, last 60 days: {design60.get('reportDate') or 'no report date'}"]}
+    asin = asins[0]
+
+    def sales_line(item):
+        royalties = sum(float(row.get("amount") or 0) for row in item.get("royaltiesByCurrency", []))
+        revenue = sum(float(row.get("amount") or 0) for row in item.get("revenueByCurrency", []))
+        return {"units": int(item.get("units") or 0), "royalties": royalties, "revenue": revenue, "reportDate": item.get("reportDate") or ""}
+
+    sales30, sales60 = sales_line(design30), sales_line(design60)
+    conn = connect()
+    cur = conn.cursor()
+    campaign_metrics = []
+    for period in ("last30", "last60"):
+        latest = latest_table_import(cur, "advertised_products", period)
+        if not latest:
+            continue
+        rows = cur.execute(
+            """SELECT campaign_name, ad_group_name, SUM(impressions) impressions,
+                      SUM(clicks) clicks, SUM(spend) spend, SUM(orders) orders,
+                      SUM(units) units, SUM(sales) sales, MAX(report_date) report_date
+               FROM advertised_products
+               WHERE import_date = ? AND COALESCE(report_period,'unspecified') = ?
+                 AND UPPER(COALESCE(advertised_asin,'')) = UPPER(?)
+               GROUP BY campaign_name, ad_group_name""",
+            (latest, period, asin),
+        ).fetchall()
+        for row in rows:
+            spend, sales, clicks = money(row["spend"]), money(row["sales"]), int(row["clicks"] or 0)
+            campaign_metrics.append({"period": period, "campaign": row["campaign_name"], "adGroup": row["ad_group_name"], "impressions": int(row["impressions"] or 0), "clicks": clicks, "spend": spend, "orders": int(row["orders"] or 0), "adUnits": int(row["units"] or 0), "sales": sales, "roas": round(sales / spend, 2) if spend else 0, "cpc": round(spend / clicks, 2) if clicks else None, "reportDate": row["report_date"] or ""})
+
+    target_metrics = {name: [] for name in ("close-match", "loose-match", "substitutes", "complements")}
+    for period in ("last30", "last60"):
+        latest = latest_table_import(cur, "targets", period)
+        if not latest:
+            continue
+        rows = cur.execute(
+            """SELECT target, match_type, MAX(bid) bid, SUM(clicks) clicks,
+                      SUM(spend) spend, SUM(orders) orders, SUM(sales) sales,
+                      MAX(report_date) report_date
+               FROM targets
+               WHERE import_date = ? AND COALESCE(report_period,'unspecified') = ?
+                 AND LOWER(COALESCE(target,'')) IN ('close-match','loose-match','substitutes','complements')
+                 AND LOWER(campaign_name) IN (SELECT LOWER(campaign_name) FROM advertised_products WHERE import_date = ? AND COALESCE(report_period,'unspecified') = ? AND UPPER(COALESCE(advertised_asin,'')) = UPPER(?))
+               GROUP BY target, match_type""",
+            (latest, period, latest, period, asin),
+        ).fetchall()
+        for row in rows:
+            key = str(row["target"] or "").lower()
+            if key in target_metrics:
+                spend, sales, clicks = money(row["spend"]), money(row["sales"]), int(row["clicks"] or 0)
+                target_metrics[key].append({"period": period, "bid": money(row["bid"]), "clicks": clicks, "spend": spend, "orders": int(row["orders"] or 0), "sales": sales, "roas": round(sales / spend, 2) if spend else 0, "cpc": round(spend / clicks, 2) if clicks else None, "reportDate": row["report_date"] or ""})
+    conn.close()
+
+    existing = sorted(campaign_metrics, key=lambda item: (item["period"] != "last30", -item["sales"], -item["orders"]))
+    has_existing = bool(existing)
+    recommendation = "Use an existing campaign" if has_existing else "Build a separate auto campaign"
+    ad_units30 = sum(item.get("adUnits", 0) for item in campaign_metrics if item["period"] == "last30")
+    ad_units60 = sum(item.get("adUnits", 0) for item in campaign_metrics if item["period"] == "last60")
+    organic30, organic60 = max(0, sales30["units"] - ad_units30), max(0, sales60["units"] - ad_units60)
+    reason = f"{title} ({asin}) sold {sales30['units']} units in the last 30 days ({ad_units30} ad-attributed, approximately {organic30} organic) and {sales60['units']} in the last 60 days ({ad_units60} ad-attributed, approximately {organic60} organic)."
+    if not has_existing and not sales30["units"]:
+        recommendation = "Do not advertise yet"
+        reason += " No 30-day sales were found, so there is not enough evidence to justify paid discovery."
+    elif not sales30["units"] or sales30["units"] < 2:
+        reason += " The 30-day sample is small, so this is a conservative discovery test; 60-day sales are context only."
+    else:
+        reason += " The 30-day window is the controlling signal; 60-day sales provide context."
+
+    rows = []
+    for target in ("close-match", "loose-match", "substitutes", "complements"):
+        metrics = sorted(target_metrics[target], key=lambda item: item["period"] != "last30")
+        primary = metrics[0] if metrics else None
+        if primary and primary.get("cpc") is not None:
+            bid = max(0.05, min(1.00, primary["cpc"]))
+            status = "Enabled" if primary["orders"] else "Low discovery bid"
+            rationale = f"30-day CPC ${primary['cpc']:.2f}; {primary['clicks']} clicks, {primary['orders']} orders, {primary['roas']:.2f} ROAS."
+            if primary["period"] == "last60":
+                rationale = "No 30-day target row; " + rationale + " 60-day context only."
+            bid_text = f"${bid:.2f}"
+        else:
+            bid_text, status = "Not enough data", "Conservative test"
+            rationale = "No reliable target-level CPC/click evidence for this ASIN; start only if the design is otherwise justified and use Amazon's suggested bid range."
+        rows.append((target.replace("-", " ").title(), bid_text, status, rationale))
+    daily_budget = max(3, min(10, round((sales30["royalties"] or 0) * 0.10, 2))) if sales30["units"] else 3
+    lines = ["Recommendation: " + recommendation, f"Design: {title}", f"ASIN: {asin}", f"Reason: {reason}", f"30-day sales: {sales30['units']} units ({ad_units30} ad-attributed; ~{organic30} organic); ${sales30['royalties']:.2f} royalties; report ending {sales30['reportDate'] or 'unavailable'}.", f"60-day sales: {sales60['units']} units ({ad_units60} ad-attributed; ~{organic60} organic); ${sales60['royalties']:.2f} royalties; report ending {sales60['reportDate'] or 'unavailable'}.", f"Daily budget: ${daily_budget:.2f}", "Bidding strategy: Dynamic bids – down only", "", "Auto target | Starting bid | Status | Reason"]
+    lines.extend(f"{name} | {bid} | {status} | {why}" for name, bid, status, why in rows)
+    lines.extend(["", "Monitoring plan: Review after 20 clicks or $5 spend per target. Raise only after an order and ROAS at or above the campaign target; lower after $5 spend with no order; pause after 2× the target CPA without an order. Do not make another change until fresh post-change data is available."])
+    evidence = [f"Design sales, last30, report ending {sales30['reportDate'] or 'unavailable'}", f"Design sales, last60, report ending {sales60['reportDate'] or 'unavailable'}"]
+    evidence.extend(f"ASIN advertising, {item['period']}, {item['campaign']} / {item['adGroup']}, report ending {item['reportDate'] or 'unavailable'}" for item in existing[:4])
+    return {"answer": "\n".join(lines), "evidence": evidence}
 
 
 def assistant_payload(question, history=None, requested_period="last30", recommendation_context=None):
@@ -3151,10 +3290,21 @@ def assistant_payload(question, history=None, requested_period="last30", recomme
             if market_filter:
                 break
     market_label = MARKET_NAMES.get(market_filter, "")
+    # The audit is for the most recently completed Amazon day (Amazon's day
+    # runs 03:00–03:00 ET), not the date of the newest sales file.  Keep the
+    # report date visible so a lagging Merch import cannot be mistaken for
+    # yesterday's sales.
+    audit_date = (amazon_reporting_date() - timedelta(days=1)).isoformat()
     sales_yesterday = home_payload("yesterday")
+    sales_yesterday["auditDate"] = audit_date
+    sales_yesterday["salesAlignedToAudit"] = sales_yesterday.get("reportDate") == audit_date
     sales_last7 = home_payload("last7")
     selected_sales = home_payload(analysis_period)
     campaigns_last7 = campaigns_payload(analysis_period).get("campaigns", [])
+    # Daily audit advertising trends must be date-aligned to the completed
+    # Amazon day.  The selected chat period (often last30) is still used for
+    # ordinary questions, but never for the audit's yesterday snapshot.
+    campaigns_audit = campaigns_payload("yesterday").get("campaigns", [])
     designs_last7 = designs_payload(analysis_period, market_filter).get("designs", [])
     daily_audit = build_daily_audit()
     previous_decisions = recommendation_history_context()
@@ -3168,6 +3318,11 @@ def assistant_payload(question, history=None, requested_period="last30", recomme
 
     if not question:
         return {"answer": "Ask me about sales, designs, campaigns, ACOS, ROAS, or what deserves attention today.", "evidence": []}
+
+    design_campaign_plan = build_design_auto_campaign_plan(question)
+    if design_campaign_plan:
+        design_campaign_plan["question"] = question
+        return design_campaign_plan
 
     pending_change = detect_campaign_change(contextual_question, campaign_catalog())
 
@@ -3244,10 +3399,11 @@ def assistant_payload(question, history=None, requested_period="last30", recomme
             daily_audit,
             sales_yesterday,
             sales_last7,
-            campaigns_last7,
+            campaigns_audit,
             audit_bid_actions,
             audit_search_terms,
             audit_sales_opportunities,
+            audit_date,
         )
         evidence.extend(briefing_evidence)
     elif False:
@@ -3951,17 +4107,31 @@ def hybrid_assistant_payload(
     recommendation_context=None,
 ):
     config = AssistantConfig.from_env()
+    # Keep design/ASIN campaign planning deterministic and fully grounded in
+    # the restricted local data layer. This prevents a model or generic
+    # fallback from confusing a design title with a similarly named campaign.
+    if build_design_auto_campaign_plan(question):
+        result = assistant_payload(question, history or [], requested_period, recommendation_context)
+        result.update({"source": "design_campaign_planner", "fallback": False})
+        return result
     if config.mode == "rules":
         result = assistant_payload(question, history or [], requested_period, recommendation_context)
         result.update({"source": "deterministic_rules", "fallback": False})
         return result
     try:
+        # A daily-audit request has a fixed subject: the last completed
+        # Amazon reporting day.  Do not let the UI's remembered last30 period
+        # make the model inspect a partial current-day snapshot.
+        audit_question = str(question or "").lower()
+        effective_period = "yesterday" if any(
+            phrase in audit_question for phrase in ("daily audit", "audit summary", "summarize today's audit", "summarize todays audit")
+        ) else requested_period
         return openai_assistant().answer(
             question,
             conversation_id=conversation_id,
             owner_hash=owner_hash(identity),
             authenticated=authentication_enabled(),
-            default_period=requested_period,
+            default_period=effective_period,
             recommendation_context=recommendation_context,
         )
     except (AssistantUnavailable, UngroundedAnswer, UsageLimitReached, ValueError) as exc:
