@@ -2776,7 +2776,7 @@ def detect_campaign_change(question, campaigns):
     # design name instead of incorrectly recording a campaign pause.
     status_words = r"paused|unpaused|turned\s+off|turn\s+off|shut\s+off|stopped|disabled|turned\s+on|turn\s+on|started|enabled"
     scoped_target = re.search(
-        rf"\b(?:{status_words})\s+(?:the\s+)?(.+?)\s+\bin\s+(.+)$",
+        rf"\b(?:{status_words})\s+(?:the\s+)?(.+?)\s+\b(?:in|inside)\s+(.+)$",
         question,
         re.IGNORECASE,
     )
