@@ -56,6 +56,7 @@ const state = {
   logLoading: false,
   logError: "",
   logScrollToBottom: false,
+  expandedChangeId: "",
   salesUploadLoading: false,
   salesUploadMessage: "",
   salesUploadError: "",
@@ -1487,12 +1488,34 @@ function renderChangeLogger() {
           <h2 class="section-title">Recent changes</h2>
           <span class="label">${recentChanges.length} shown</span>
         </div>
-        ${recentChanges.length ? recentChanges.slice(0, 8).map((item) => `
-          <div class="recent-change-row">
-            <strong>${escapeHtml(item.summary || item.details)}</strong>
-            <span>${escapeHtml(item.loggedAt)}</span>
-          </div>
-        `).join("") : `<div class="sub">No campaign changes have been logged yet.</div>`}
+        ${recentChanges.length ? recentChanges.map((item) => {
+          const id = String(item.id || `${item.loggedAt}-${item.campaignName}`);
+          const context = [item.campaignName, item.targetName].filter(Boolean).join(" · ");
+          const title = item.summary || item.details || item.changeType || "Campaign change";
+          const expanded = state.expandedChangeId === id;
+          return `
+            <div class="recent-change-entry">
+              <div class="recent-change-row" role="button" tabindex="0" data-change-details-toggle="${escapeHtml(id)}" aria-expanded="${expanded}">
+                <div class="recent-change-heading">
+                  <strong>${escapeHtml(title)}</strong>
+                  <span class="recent-change-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span>
+                </div>
+                ${context ? `<span class="recent-change-context">${escapeHtml(context)}</span>` : ""}
+                <span>${escapeHtml(item.loggedAt || item.effectiveAt || "")}</span>
+              </div>
+              <div class="recent-change-details" data-change-details="${escapeHtml(id)}" ${expanded ? "" : "hidden"}>
+                ${item.details && item.details !== title ? `<div><b>What changed</b><span>${escapeHtml(item.details)}</span></div>` : ""}
+                ${item.changeType ? `<div><b>Change type</b><span>${escapeHtml(item.changeType)}</span></div>` : ""}
+                ${item.campaignName ? `<div><b>Campaign</b><span>${escapeHtml(item.campaignName)}${item.campaignId ? ` (${escapeHtml(item.campaignId)})` : ""}</span></div>` : ""}
+                ${item.targetName ? `<div><b>Term / target</b><span>${escapeHtml(item.targetName)}${item.targetId ? ` (${escapeHtml(item.targetId)})` : ""}</span></div>` : ""}
+                ${item.adGroupId ? `<div><b>Ad group ID</b><span>${escapeHtml(item.adGroupId)}</span></div>` : ""}
+                ${(item.previousValue || item.newValue) ? `<div><b>Value</b><span>${escapeHtml(item.previousValue || "—")} → ${escapeHtml(item.newValue || "—")}</span></div>` : ""}
+                ${item.effectiveDate ? `<div><b>Effective date</b><span>${escapeHtml(item.effectiveDate)}</span></div>` : ""}
+                ${item.recommendationId ? `<div><b>Related recommendation</b><span>${escapeHtml(item.recommendationId)}</span></div>` : ""}
+              </div>
+            </div>
+          `;
+        }).join("") : `<div class="sub">No campaign changes have been logged yet.</div>`}
       </section>
     </div>
   `;
@@ -2601,6 +2624,24 @@ function render({ preserveScroll = true } = {}) {
       render();
       if (state.aiMode === "log" && !state.changeOptions) loadChangeOptions();
     });
+  });
+
+  document.querySelectorAll("[data-change-details-toggle]").forEach((row) => {
+    const toggleChangeDetails = (event) => {
+      if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      const id = row.dataset.changeDetailsToggle || "";
+      const details = document.querySelector(`[data-change-details="${CSS.escape(id)}"]`);
+      if (!details) return;
+      const expanded = details.hidden;
+      state.expandedChangeId = expanded ? id : "";
+      details.hidden = !expanded;
+      row.setAttribute("aria-expanded", String(expanded));
+      const chevron = row.querySelector(".recent-change-chevron");
+      if (chevron) chevron.textContent = expanded ? "⌃" : "⌄";
+    };
+    row.addEventListener("click", toggleChangeDetails);
+    row.addEventListener("keydown", toggleChangeDetails);
   });
 
   document.querySelectorAll("[data-log-change]").forEach((button) => {

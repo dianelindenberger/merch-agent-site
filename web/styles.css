@@ -1600,22 +1600,73 @@ svg {
   gap: 4px;
 }
 
+.recent-change-entry {
+  border-top: 1px solid var(--line);
+}
+
 .recent-change-row {
   display: grid;
   gap: 4px;
   min-height: 58px;
   padding: 11px 0;
-  border-top: 1px solid var(--line);
+  cursor: pointer;
+  outline: none;
+}
+
+.recent-change-row:focus-visible,
+.recent-change-row:hover {
+  background: color-mix(in srgb, var(--brand) 6%, transparent);
+}
+
+.recent-change-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .recent-change-row strong {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.4;
 }
 
 .recent-change-row span {
   color: var(--muted);
   font-size: 10px;
+}
+
+.recent-change-context {
+  color: var(--brand) !important;
+  font-size: 12px !important;
+  font-weight: 750;
+}
+
+.recent-change-chevron {
+  color: var(--brand) !important;
+  font-size: 18px !important;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.recent-change-details {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 14px;
+  border-radius: 10px;
+  background: var(--soft);
+  font-size: 12px;
+}
+
+.recent-change-details div {
+  display: grid;
+  gap: 2px;
+}
+
+.recent-change-details b {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
 }
 
 .bubble {

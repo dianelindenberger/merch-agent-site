@@ -2769,6 +2769,23 @@ def detect_campaign_change(question, campaigns):
         "complements": "complements",
     }
     target_name = next((value for phrase, value in target_aliases.items() if phrase in normalized), "")
+    change_category = "campaign"
+    # When the user says “paused DESIGN in CAMPAIGN”, the campaign is the
+    # container and the design is the object that changed.  The logger adds
+    # the selected campaign to free-form text during preview, so preserve the
+    # design name instead of incorrectly recording a campaign pause.
+    status_words = r"paused|unpaused|turned\s+off|turn\s+off|shut\s+off|stopped|disabled|turned\s+on|turn\s+on|started|enabled"
+    scoped_target = re.search(
+        rf"\b(?:{status_words})\s+(?:the\s+)?(.+?)\s+\bin\s+(.+)$",
+        question,
+        re.IGNORECASE,
+    )
+    if scoped_target and any(word in normalized for word in ("paused", "unpaused", "turned off", "turn off", "shut off", "stopped", "disabled", "turned on", "turn on", "started", "enabled")):
+        candidate = scoped_target.group(1).strip(" .,:;\"")
+        candidate = re.sub(r"^(?:design|ad group|target)\s*[:\-]?\s*", "", candidate, flags=re.IGNORECASE)
+        if candidate:
+            target_name = candidate
+            change_category = "design"
     keyword_terms = [term.strip() for term in re.findall(r'["\u201c\u201d]([^"\u201c\u201d]+)["\u201c\u201d]', question) if term.strip()]
 
     if any(word in normalized for word in ("negated", "negative keyword", "negative phrase", "excluded", "blocked search")):
@@ -2804,6 +2821,7 @@ def detect_campaign_change(question, campaigns):
         "previousValue": previous_value,
         "newValue": new_value,
         "effectiveDate": parse_effective_date(question),
+        "changeCategory": change_category,
     }
 
 
@@ -2830,6 +2848,10 @@ def describe_campaign_change(payload):
     elif change_type == "Target bid change" and target_name and previous_value and new_value:
         direction = "lowered" if float(new_value) < float(previous_value) else "raised" if float(new_value) > float(previous_value) else "changed"
         description = f"{campaign} {target_name} bid {direction} from ${previous_value} to ${new_value}"
+    elif change_type == "Status change" and new_value and target_name:
+        category = str(payload.get("changeCategory", "")).strip().lower() or "design"
+        noun = "design" if category == "design" else "target"
+        description = f'{campaign} {noun} "{target_name}" {new_value.lower()}'
     elif change_type == "Status change" and new_value:
         description = f"{campaign} {new_value.lower()}"
     elif change_type == "Bid change" and previous_value and new_value:
@@ -2868,8 +2890,8 @@ def save_campaign_change(payload):
         """
         INSERT INTO campaign_change_log
         (campaign_name, target_name, change_type, details, previous_value, new_value,
-         effective_date, summary, logged_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         effective_date, summary, logged_at, change_category)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             matched_campaign["name"],
@@ -2881,6 +2903,7 @@ def save_campaign_change(payload):
             str(payload.get("effectiveDate", "")).strip(),
             summary,
             logged_at,
+            str(payload.get("changeCategory", "")).strip(),
         ),
     )
     change_id = cur.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -2952,10 +2975,11 @@ def change_options_payload():
         rows = cur.execute(
             """
             SELECT id, campaign_name, target_name, change_type, details, previous_value,
-                   new_value, effective_date, summary, logged_at
+                   new_value, effective_date, summary, logged_at,
+                   campaign_id, ad_group_id, target_id, recommendation_id,
+                   change_category, effective_at, user_id
             FROM campaign_change_log
             ORDER BY logged_at DESC, id DESC
-            LIMIT 20
             """
         ).fetchall()
         conn.commit()
@@ -2972,6 +2996,13 @@ def change_options_payload():
                 "effectiveDate": row["effective_date"],
                 "summary": row["summary"] or row["details"],
                 "loggedAt": row["logged_at"],
+                "campaignId": row["campaign_id"],
+                "adGroupId": row["ad_group_id"],
+                "targetId": row["target_id"],
+                "recommendationId": row["recommendation_id"],
+                "changeCategory": row["change_category"],
+                "effectiveAt": row["effective_at"],
+                "userId": row["user_id"],
             }
             for row in rows
         ]
@@ -2980,6 +3011,84 @@ def change_options_payload():
         "campaigns": sorted(unique_campaigns.values(), key=lambda item: item["name"].lower()),
         "recentChanges": recent_changes,
     }
+
+
+def build_owner_audit_briefing(daily_audit, sales_yesterday, sales_last7, campaigns_last7,
+                               audit_bid_actions, audit_search_terms, audit_sales_opportunities):
+    """Turn the structured audit into a concise business-owner briefing."""
+    active = [item for item in (daily_audit.get("activeBidRecommendations") or audit_bid_actions)
+              if item.get("action") != "Hold"]
+    active.sort(key=lambda item: (str(item.get("priority", "medium")).lower() != "high",
+                                  -float(item.get("spend", 0) or 0)))
+    active = active[:4]
+    monitoring = (daily_audit.get("monitoringRecommendations") or [])[:3]
+    yesterday_units = int(sales_yesterday.get("sales") or 0)
+    recent_units = int(sales_last7.get("sales") or 0)
+    average_units = recent_units / 7 if recent_units else 0
+    if average_units and yesterday_units > average_units * 1.15:
+        opening = "Yesterday was stronger than the recent norm, with sales momentum worth protecting."
+    elif average_units and yesterday_units < average_units * 0.85:
+        opening = "Yesterday was softer than the recent norm, so the priority is separating a real decline from normal daily volatility."
+    else:
+        opening = "Yesterday was generally stable, with no evidence of a broad business deterioration."
+
+    yesterday_royalties = float(sales_yesterday.get("royalties") or 0)
+    parts = [opening, f"Total sales were {yesterday_units} units and approximately ${yesterday_royalties:.2f} in royalties."]
+    winners = (sales_yesterday.get("products") or sales_last7.get("products") or [])[:3]
+    if winners:
+        names = ", ".join(f"{item.get('title', 'Untitled')} ({item.get('units', 0)} units)" for item in winners)
+        parts.append(f"The strongest recent sellers were {names}; protect those winners while reviewing weaker advertising signals.")
+
+    evidence = []
+    if active:
+        lines = []
+        for item in active:
+            lines.append(
+                f"- **{str(item.get('priority', 'medium')).title()} Priority** — {item.get('action', 'Review')} "
+                f"{item.get('campaignName', 'campaign')} / {item.get('target', 'target')} "
+                f"from ${float(item.get('currentBid', 0) or 0):.2f} to ${float(item.get('suggestedBid', 0) or 0):.2f}. "
+                f"{item.get('reason', 'Recent performance supports this action.')} "
+                f"Confidence: {str(item.get('confidence', 'medium')).title()}."
+            )
+            evidence.append(
+                f"{item.get('campaignName')} | {item.get('target')} | {item.get('recommendationPeriod', '14-day')} | "
+                f"{item.get('clicks', 0)} clicks | ${float(item.get('spend', 0) or 0):.2f} spend | "
+                f"{item.get('orders', 0)} orders | {float(item.get('roas', 0) or 0):.2f} ROAS"
+            )
+        parts.append("**Highest-priority actions**\n" + "\n".join(lines))
+    else:
+        parts.append("**Highest-priority actions**\nNo additional bid change is recommended today; the evidence threshold for a new action was not met.")
+
+    search_terms = (daily_audit.get("searchTermRecommendations") or audit_search_terms)[:2]
+    if search_terms:
+        parts.append("**Advertising trends**\n" + "\n".join(
+            f"- Review **{item.get('searchTerm', 'term')}** in **{item.get('campaignName', 'unknown campaign')}**: "
+            f"{item.get('action', 'monitor')} ({float(item.get('roas', 0) or 0):.2f} ROAS)."
+            for item in search_terms
+        ))
+
+    weak = [item for item in campaigns_last7 if item.get("spend", 0) >= 5 and item.get("orders", 0) == 0][:2]
+    improving = [item for item in campaigns_last7 if item.get("orders", 0) and item.get("roas", 0) >= 7][:2]
+    trend_lines = []
+    if improving:
+        trend_lines.append("- Improving: " + ", ".join(item["name"] for item in improving) + ".")
+    if weak:
+        trend_lines.append("- Wasted-spend candidates: " + ", ".join(item["name"] for item in weak) + "; review targets and search terms before pausing a whole campaign.")
+    if trend_lines:
+        parts.append("**Campaign trends**\n" + "\n".join(trend_lines))
+
+    if monitoring:
+        parts.append("**Recent changes to monitor**\n" + "\n".join(
+            f"- {item.get('campaignName', 'Campaign')} / {item.get('target', 'target')} is still gathering post-change data; do not change it again yet."
+            for item in monitoring
+        ))
+    elif not active:
+        parts.append("Several decisions are better treated as wait-and-see until the next completed data window.")
+
+    if daily_audit.get("delayedSalesData"):
+        parts.append("Merch sales are delayed, so confidence is based primarily on the available advertising data.")
+    parts.append("**Bottom line:** " + ("Focus on the highest-priority action above." if active else "No major changes are recommended today; continue monitoring recent adjustments."))
+    return "\n\n".join(parts), evidence
 
 
 def assistant_payload(question, history=None, requested_period="last30", recommendation_context=None):
@@ -3131,6 +3240,17 @@ def assistant_payload(question, history=None, requested_period="last30", recomme
         return sum(1 for word in words if word in text)
 
     if any(phrase in normalized for phrase in ("work on today", "do today", "attention today", "daily audit", "audit summary")):
+        answer, briefing_evidence = build_owner_audit_briefing(
+            daily_audit,
+            sales_yesterday,
+            sales_last7,
+            campaigns_last7,
+            audit_bid_actions,
+            audit_search_terms,
+            audit_sales_opportunities,
+        )
+        evidence.extend(briefing_evidence)
+    elif False:
         top_bids = audit_bid_actions[:3]
         top_search = audit_search_terms[:2]
         top_sales = audit_sales_opportunities[:2]
