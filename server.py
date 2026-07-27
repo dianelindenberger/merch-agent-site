@@ -1111,6 +1111,17 @@ def design_royalties_text(item):
     return currency_amount_text(item.get("royalties"), item.get("currency", "USD"))
 
 
+def royalty_breakdown_text(breakdown):
+    """Format estimated Merch earnings without combining currencies."""
+    values = []
+    for entry in breakdown or []:
+        currency = str(entry.get("currency") or "USD").upper()
+        amount = money(entry.get("amount"))
+        decimals = 0 if currency == "JPY" else 2
+        values.append(f"{currency} {amount:,.{decimals}f}")
+    return " + ".join(values)
+
+
 def connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -3063,8 +3074,16 @@ def build_owner_audit_briefing(daily_audit, sales_yesterday, sales_last7, campai
         opening = "Yesterday was generally stable, with no evidence of a broad business deterioration."
 
     if sales_aligned:
-        yesterday_royalties = float(sales_yesterday.get("royalties") or 0)
-        parts = [opening, f"Total Merch sales for {audit_date} were {yesterday_units} units and approximately ${yesterday_royalties:.2f} in royalties."]
+        royalty_text = royalty_breakdown_text(sales_yesterday.get("royaltyByCurrency"))
+        if not royalty_text and sales_yesterday.get("royalties") is not None:
+            # Legacy single-currency payloads are USD. Current imports always
+            # provide royaltyByCurrency, which must never be summed across
+            # currencies and presented as one dollar amount.
+            royalty_text = f"USD {float(sales_yesterday.get('royalties') or 0):,.2f}"
+        parts = [
+            opening,
+            f"Total Merch sales for {audit_date} were {yesterday_units} units with estimated royalties of {royalty_text or 'unavailable'}.",
+        ]
         winners = (sales_yesterday.get("products") or [])[:3]
         if winners:
             names = ", ".join(f"{item.get('title', 'Untitled')} ({item.get('units', 0)} units)" for item in winners)
@@ -3955,6 +3974,26 @@ def build_ai_tool_layer():
                 {"currency": currency, "amount": amount}
                 for currency, amount in sorted(royalty_totals.items())
             ]
+        safe_markets = []
+        gross_retail_by_currency = {}
+        for item in markets[:limit]:
+            safe_item = dict(item)
+            gross_retail_sales = money(safe_item.pop("revenue", 0))
+            safe_item["grossRetailSales"] = gross_retail_sales
+            currency = str(safe_item.get("currency") or "USD").upper()
+            gross_retail_by_currency[currency] = money(
+                gross_retail_by_currency.get(currency, 0) + gross_retail_sales
+            )
+            safe_markets.append(safe_item)
+
+        safe_products = []
+        for item in products[:limit]:
+            safe_item = dict(item)
+            safe_item["grossRetailSales"] = money(safe_item.pop("revenue", 0))
+            if "royalty" in safe_item:
+                safe_item["estimatedRoyalty"] = money(safe_item.pop("royalty", 0))
+            safe_products.append(safe_item)
+
         return {
             "period": period,
             "periodStart": payload.get("periodStart", ""),
@@ -3965,9 +4004,15 @@ def build_ai_tool_layer():
             "marketMatched": bool(markets) if market else True,
             "units": units,
             "royaltiesByCurrency": royalties_by_currency,
+            "royaltiesDefinition": "Estimated Merch earnings; currencies are separate and must not be added without conversion.",
+            "grossRetailSalesByCurrency": [
+                {"currency": currency, "amount": amount}
+                for currency, amount in sorted(gross_retail_by_currency.items())
+            ],
+            "grossRetailSalesDefinition": "Amazon customer retail sales before Merch royalties; this is not the seller's income or earnings.",
             "returns": returns,
-            "markets": markets[:limit],
-            "products": products[:limit],
+            "markets": safe_markets,
+            "products": safe_products,
         }
 
     def query_designs(period="last7", market="", search="", limit=20):
