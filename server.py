@@ -1952,6 +1952,29 @@ def home_payload(period):
         return dated_home_response(period, daily)
     latest_import = latest_sales_import(cur, period)
 
+    # Never substitute a multi-period import for a missing current-day sales
+    # snapshot. That fallback can add several report buckets together and
+    # present an impossible batch total as one day's sales. Current-day Merch
+    # data is partial by definition and is not used by the daily audit.
+    if period == "today" and not latest_import:
+        conn.close()
+        return {
+            "source": "current_day_unavailable",
+            "period": "today",
+            "reportDate": "",
+            "periodStart": "",
+            "periodEnd": "",
+            "complete": False,
+            "sales": 0,
+            "royalties": 0,
+            "royaltyByCurrency": [],
+            "revenue": 0,
+            "returns": 0,
+            "products": [],
+            "markets": [],
+            "summary": ["Current-day Merch sales are partial and are excluded from the daily audit."],
+        }
+
     if not latest_import and period != "all":
         period = "all"
         latest_import = latest_sales_import(cur, period)
@@ -4107,6 +4130,17 @@ def hybrid_assistant_payload(
     recommendation_context=None,
 ):
     config = AssistantConfig.from_env()
+    audit_question = str(question or "").lower()
+    is_daily_audit = any(
+        phrase in audit_question
+        for phrase in (
+            "daily audit",
+            "audit summary",
+            "summarize today's audit",
+            "summarize todays audit",
+        )
+    )
+    effective_period = "yesterday" if is_daily_audit else requested_period
     # Keep design/ASIN campaign planning deterministic and fully grounded in
     # the restricted local data layer. This prevents a model or generic
     # fallback from confusing a design title with a similarly named campaign.
@@ -4115,17 +4149,13 @@ def hybrid_assistant_payload(
         result.update({"source": "design_campaign_planner", "fallback": False})
         return result
     if config.mode == "rules":
-        result = assistant_payload(question, history or [], requested_period, recommendation_context)
+        result = assistant_payload(question, history or [], effective_period, recommendation_context)
         result.update({"source": "deterministic_rules", "fallback": False})
         return result
     try:
         # A daily-audit request has a fixed subject: the last completed
         # Amazon reporting day.  Do not let the UI's remembered last30 period
         # make the model inspect a partial current-day snapshot.
-        audit_question = str(question or "").lower()
-        effective_period = "yesterday" if any(
-            phrase in audit_question for phrase in ("daily audit", "audit summary", "summarize today's audit", "summarize todays audit")
-        ) else requested_period
         return openai_assistant().answer(
             question,
             conversation_id=conversation_id,
@@ -4136,7 +4166,7 @@ def hybrid_assistant_payload(
         )
     except (AssistantUnavailable, UngroundedAnswer, UsageLimitReached, ValueError) as exc:
         if config.mode == "hybrid":
-            result = assistant_payload(question, history or [], requested_period, recommendation_context)
+            result = assistant_payload(question, history or [], effective_period, recommendation_context)
             reason = (
                 "usage_limit"
                 if isinstance(exc, UsageLimitReached)

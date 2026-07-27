@@ -444,6 +444,16 @@ class ResponsesAssistant:
             "role": "developer",
             "content": f"The currently selected Merch Agent period is {default_period}. Use it only when the user did not specify another period.",
         })
+        daily_audit_request = default_period == "yesterday" and "audit" in clean_question.lower()
+        if daily_audit_request:
+            input_items.append({
+                "role": "developer",
+                "content": (
+                    "This is today's scheduled business briefing about yesterday's completed reporting day. "
+                    "Never request or cite period=today. Use period=yesterday for the subject day and only "
+                    "last7, last14, last30, or last60 for historical context."
+                ),
+            })
         compact_recommendation = _compact_recommendation_context(recommendation_context)
         if compact_recommendation:
             input_items.append({
@@ -520,7 +530,11 @@ class ResponsesAssistant:
                     result = self.tools.execute(
                         name,
                         arguments,
-                        context={"conversation_id": conversation_id, "request_id": request_root},
+                        context={
+                            "conversation_id": conversation_id,
+                            "request_id": request_root,
+                            "completed_day_only": daily_audit_request,
+                        },
                     )
                     count = _result_count(result.data)
                     self.store.audit_tool(request_root, name, result.arguments, count, "success")

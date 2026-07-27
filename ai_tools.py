@@ -207,8 +207,20 @@ class RestrictedAIToolLayer:
         if provider is None:
             raise ToolValidationError(f"Tool is not configured: {name}.")
         validated = self._validate(name, args)
+        request_context = dict(context or {})
+        # A daily audit is always about the last completed reporting day.
+        # Models may interpret the phrase "today's audit" as a request for a
+        # partial current-day snapshot, so enforce the completed-day boundary
+        # at the restricted tool layer instead of relying on prompt wording.
+        if request_context.get("completed_day_only"):
+            if validated.get("period") == "today":
+                validated["period"] = "yesterday"
+            if validated.get("period_a") == "today":
+                validated["period_a"] = "yesterday"
+            if validated.get("period_b") == "today":
+                validated["period_b"] = "yesterday"
         if name in LOCAL_WRITE_TOOL_NAMES:
-            result = provider(_context=dict(context or {}), **validated)
+            result = provider(_context=request_context, **validated)
         else:
             result = provider(**validated)
         if not isinstance(result, Mapping):
