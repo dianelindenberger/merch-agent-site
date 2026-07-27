@@ -1492,7 +1492,7 @@ function renderChangeLogger() {
       <section class="card recent-changes-card">
         <div class="row">
           <h2 class="section-title">Recent changes</h2>
-          <span class="label">${recentChanges.length ? `${changeStart + 1}â€“${changeStart + visibleChanges.length} of ` : ""}${recentChanges.length}</span>
+          <span class="label">${recentChanges.length ? `${changeStart + 1}-${changeStart + visibleChanges.length} of ` : ""}${recentChanges.length}</span>
         </div>
         ${recentChanges.length ? visibleChanges.map((item) => {
           const id = String(item.id || `${item.loggedAt}-${item.campaignName}`);
