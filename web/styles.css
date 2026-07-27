@@ -1669,6 +1669,39 @@ svg {
   letter-spacing: .04em;
 }
 
+.change-history-pagination {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) auto minmax(92px, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.change-history-pagination button {
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+  color: var(--indigo);
+  font-weight: 800;
+}
+
+.change-history-pagination button:disabled {
+  color: var(--muted);
+  opacity: .55;
+}
+
+.change-history-pagination span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
 .bubble {
   max-width: 82%;
   border-radius: 20px;

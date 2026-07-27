@@ -57,6 +57,7 @@ const state = {
   logError: "",
   logScrollToBottom: false,
   expandedChangeId: "",
+  changeHistoryPage: 0,
   salesUploadLoading: false,
   salesUploadMessage: "",
   salesUploadError: "",
@@ -1454,6 +1455,11 @@ function renderAskAssistant() {
 function renderChangeLogger() {
   const campaigns = state.changeOptions?.campaigns || [];
   const recentChanges = state.changeOptions?.recentChanges || [];
+  const changePageSize = 8;
+  const changePageCount = Math.max(1, Math.ceil(recentChanges.length / changePageSize));
+  const changePage = Math.min(state.changeHistoryPage, changePageCount - 1);
+  const changeStart = changePage * changePageSize;
+  const visibleChanges = recentChanges.slice(changeStart, changeStart + changePageSize);
   return `
     <div class="stack assistant-workspace">
       <section class="card change-entry-card">
@@ -1486,9 +1492,9 @@ function renderChangeLogger() {
       <section class="card recent-changes-card">
         <div class="row">
           <h2 class="section-title">Recent changes</h2>
-          <span class="label">${recentChanges.length} shown</span>
+          <span class="label">${recentChanges.length ? `${changeStart + 1}â€“${changeStart + visibleChanges.length} of ` : ""}${recentChanges.length}</span>
         </div>
-        ${recentChanges.length ? recentChanges.map((item) => {
+        ${recentChanges.length ? visibleChanges.map((item) => {
           const id = String(item.id || `${item.loggedAt}-${item.campaignName}`);
           const context = [item.campaignName, item.targetName].filter(Boolean).join(" · ");
           const title = item.summary || item.details || item.changeType || "Campaign change";
@@ -1516,6 +1522,13 @@ function renderChangeLogger() {
             </div>
           `;
         }).join("") : `<div class="sub">No campaign changes have been logged yet.</div>`}
+        ${recentChanges.length > changePageSize ? `
+          <div class="change-history-pagination" aria-label="Change history pages">
+            <button type="button" data-change-page="${changePage - 1}" ${changePage === 0 ? "disabled" : ""}>Previous</button>
+            <span>Page ${changePage + 1} of ${changePageCount}</span>
+            <button type="button" data-change-page="${changePage + 1}" ${changePage >= changePageCount - 1 ? "disabled" : ""}>Next</button>
+          </div>
+        ` : ""}
       </section>
     </div>
   `;
@@ -2642,6 +2655,17 @@ function render({ preserveScroll = true } = {}) {
     };
     row.addEventListener("click", toggleChangeDetails);
     row.addEventListener("keydown", toggleChangeDetails);
+  });
+
+  document.querySelectorAll("[data-change-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextPage = Number(button.dataset.changePage);
+      if (!Number.isInteger(nextPage) || nextPage < 0) return;
+      state.changeHistoryPage = nextPage;
+      state.expandedChangeId = "";
+      render({ preserveScroll: true });
+      document.querySelector(".recent-changes-card")?.scrollIntoView({ block: "nearest" });
+    });
   });
 
   document.querySelectorAll("[data-log-change]").forEach((button) => {
