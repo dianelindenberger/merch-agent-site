@@ -1,11 +1,12 @@
-const CACHE_NAME = "merch-agent-static-v32";
+const CACHE_NAME = "merch-agent-static-v33";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/styles.css?v=55",
   "/app.js?v=70",
-  "/manifest.webmanifest",
-  "/app-icon.svg"
+  "/manifest.webmanifest?v=2",
+  "/merch-agent-icon-192-v2.png",
+  "/merch-agent-icon-512-v2.png"
 ];
 
 self.addEventListener("install", (event) => {
