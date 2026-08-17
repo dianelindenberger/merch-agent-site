@@ -1,0 +1,3017 @@
+const state = {
+  page: "home",
+  homePeriod: "yesterday",
+  period: "7D",
+  adsTab: "Overview",
+  adsPeriod: "today",
+  adsCustomStart: "",
+  adsCustomEnd: "",
+  homeData: null,
+  homeError: "",
+  homeLoading: false,
+  homeRequest: 0,
+  royaltyTier: null,
+  royaltyTierError: "",
+  adsData: null,
+  adsError: "",
+  campaignsData: null,
+  campaignsError: "",
+  campaignSearch: "",
+  selectedCampaign: "",
+  selectedAdGroup: "",
+  campaignDetail: null,
+  campaignDetailError: "",
+  campaignDetailLoading: false,
+  campaignDetailRequest: 0,
+  analyticsData: null,
+  analyticsError: "",
+  analyticsShowSales: true,
+  analyticsShowRoyalties: true,
+  analyticsGranularity: "daily",
+  analyticsCustomStart: "",
+  analyticsCustomEnd: "",
+  adImpactData: null,
+  adImpactError: "",
+  analyticsRenderPending: false,
+  dailyAudit: null,
+  dailyAuditError: "",
+  dailyAuditLoading: false,
+  aiMessages: [
+    { role: "ai", text: "Ask me to explain the daily audit, a bid recommendation, a search term, or a sales opportunity. I can also prepare a campaign-change log, but I will not apply Amazon Ads changes.", evidence: [] },
+  ],
+  aiLoading: false,
+  aiError: "",
+  aiDraft: "",
+  aiConversationId: "",
+  aiPeriod: "last30",
+  aiFocusComposer: false,
+  aiScrollToBottom: false,
+  aiMode: "audit",
+  changeOptions: null,
+  changeOptionsError: "",
+  logCampaign: "",
+  logCampaignPickerOpen: false,
+  logDeferredRender: false,
+  logDate: new Date().toLocaleDateString("en-CA"),
+  logDescription: "",
+  logMessages: [
+    { role: "ai", text: "Select the campaign and date, then describe what changed in your own words.", evidence: [] },
+  ],
+  logLoading: false,
+  logError: "",
+  logScrollToBottom: false,
+  expandedChangeId: "",
+  editingChangeId: "",
+  changeHistoryPage: 0,
+  salesUploadLoading: false,
+  salesUploadMessage: "",
+  salesUploadError: "",
+  salesStatus: null,
+  dataFreshness: null,
+  aiUsage: null,
+  aiUsageError: "",
+  aiSettingsSaving: false,
+  recommendationInteractions: {},
+  recommendationView: "bids",
+  expandedRecommendationId: "",
+  recommendationNotice: "",
+  recommendationDialogOpen: false,
+  recommendationDeferredRender: false,
+  openRecommendationIds: new Set(),
+  activeRecommendation: null,
+};
+
+if ("serviceWorker" in navigator) {
+  let refreshingForServiceWorker = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!refreshingForServiceWorker) {
+      refreshingForServiceWorker = true;
+      window.location.reload();
+    }
+  });
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => {
+      // The app remains fully usable online if a browser does not support service workers.
+    });
+  });
+}
+
+const sampleProducts = [
+  { title: "Hold Your Horses Funny Meme", market: "USA", price: "$21.99", royalty: "$5.14", age: "2h ago", thumb: "H", color: "brown" },
+  { title: "Bleghssed Death Metal Shirt", market: "USA", price: "$21.99", royalty: "$4.92", age: "3h ago", thumb: "B", color: "black" },
+  { title: "Watermelon Cat", market: "UK", price: "$21.99", royalty: "$6.84", age: "4h ago", thumb: "W", color: "green" },
+];
+
+const markets = [
+  ["USA", 21, "$111.79", "dot-us"],
+  ["UK", 2, "$10.01", "dot-uk"],
+  ["DE", 2, "$6.01", "dot-de"],
+  ["FR", 0, "$0.00", "dot-fr"],
+  ["JP", 0, "$0.00", "dot-jp"],
+  ["ES", 0, "$0.00", "dot-es"],
+];
+
+const campaigns = [
+  { name: "Watermelon Cat - Auto", spend: "$34.71", roas: "11.17", fill: 84 },
+  { name: "Side Eye Horse Meme - Manual", spend: "$18.23", roas: "4.21", fill: 58 },
+  { name: "Eepy Cat - Auto", spend: "$15.08", roas: "3.22", fill: 42 },
+];
+
+const pageMeta = {
+  home: ["Dashboard", "Today at a glance"],
+  ads: ["Ads", "Amazon Ads snapshot"],
+  analytics: ["Analytics", "Trends and breakdowns"],
+  ai: ["AI Assistant", "Daily audit and business analysis"],
+  more: ["More", "Tools and settings"],
+};
+
+function hasSubscreen() {
+  return state.page === "ads" && Boolean(state.selectedCampaign);
+}
+
+function backLabel() {
+  if (hasSubscreen()) return "Back to all campaigns";
+  if (state.page === "home") return "Home";
+  return "Back to Home";
+}
+
+function goBack() {
+  if (hasSubscreen()) {
+    state.campaignDetailRequest += 1;
+    state.campaignDetailLoading = false;
+    state.selectedCampaign = "";
+    state.selectedAdGroup = "";
+    state.campaignDetail = null;
+    state.campaignDetailError = "";
+    render({ preserveScroll: false });
+    return;
+  }
+
+  if (state.page !== "home") {
+    state.page = "home";
+    state.homeData = null;
+    state.homeLoading = true;
+    render({ preserveScroll: false });
+    loadHomeData();
+  }
+}
+
+function navigateToPage(page) {
+  state.page = page;
+  if (state.page === "home") {
+    state.campaignDetailRequest += 1;
+    state.campaignDetailLoading = false;
+    state.selectedCampaign = "";
+    state.campaignDetail = null;
+    state.homeData = null;
+    state.homeLoading = true;
+    render({ preserveScroll: false });
+    loadHomeData();
+  } else {
+    render({ preserveScroll: false });
+    if (page === "more") loadAIUsage();
+    if (page === "analytics") loadAdImpactData();
+  }
+}
+
+function hasSelectedContentText() {
+  const selection = window.getSelection?.();
+  const content = document.querySelector("#app-content");
+  return Boolean(
+    selection
+    && !selection.isCollapsed
+    && content
+    && (content.contains(selection.anchorNode) || content.contains(selection.focusNode))
+  );
+}
+
+document.addEventListener("selectionchange", () => {
+  if (state.analyticsRenderPending && !hasSelectedContentText()) {
+    state.analyticsRenderPending = false;
+    render({ preserveScroll: true });
+  }
+});
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatMoney(value) {
+  return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatCurrency(value, currency = "USD") {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currency || "USD",
+      minimumFractionDigits: currency === "JPY" ? 0 : 2,
+      maximumFractionDigits: currency === "JPY" ? 0 : 2,
+    }).format(Number(value || 0));
+  } catch (error) {
+    return formatMoney(value);
+  }
+}
+
+function formatCurrencyBreakdown(items, fallbackValue = 0, fallbackCurrency = "USD") {
+  const values = (items || []).filter((item) => Number(item.amount || 0) !== 0);
+  if (!values.length) return formatCurrency(fallbackValue, fallbackCurrency);
+  return values.map((item) => formatCurrency(item.amount, item.currency)).join(" + ");
+}
+
+const approximateUsdRates = { USD: 1, EUR: 1.08, GBP: 1.27, CAD: 0.73, AUD: 0.66, JPY: 0.0067 };
+
+function estimateUsdRoyalties(markets, fallback = 0) {
+  const values = (markets || []).filter((market) => Number(market.royalties ?? market.revenue ?? 0) !== 0);
+  if (!values.length) return Number(fallback || 0);
+  return values.reduce((total, market) => {
+    const currency = String(market.currency || "USD").toUpperCase();
+    const rate = approximateUsdRates[currency] || 1;
+    return total + Number(market.royalties ?? market.revenue ?? 0) * rate;
+  }, 0);
+}
+
+function campaignChangeSummary(change) {
+  if (change?.summary) return change.summary;
+  const campaign = change?.campaignName || "Campaign";
+  const dateText = change?.effectiveDate || "date not provided";
+  if (change?.changeType === "Status change" && change?.newValue) {
+    return `${campaign} ${String(change.newValue).toLowerCase()} on ${dateText}`;
+  }
+  return `${campaign}: ${change?.changeType || "campaign change"} on ${dateText}`;
+}
+
+function marketFlag(market) {
+  const flags = {
+    ".com": "🇺🇸",
+    ".co.uk": "🇬🇧",
+    ".de": "🇩🇪",
+    ".fr": "🇫🇷",
+    ".it": "🇮🇹",
+    ".es": "🇪🇸",
+    ".co.jp": "🇯🇵",
+  };
+  return flags[String(market?.code || "").toLowerCase()] || "🌐";
+}
+
+function displayMoney(value) {
+  if (typeof value === "string" && value.trim().startsWith("$")) {
+    return value;
+  }
+
+  return formatMoney(value);
+}
+
+function productColor(index) {
+  return ["teal", "sky", "coral", "gold", "indigo"][index % 5];
+}
+
+function fallbackHomeData() {
+  return {
+    source: "unavailable",
+    period: "unavailable",
+    reportDate: "Data unavailable",
+    latestImport: "",
+    sales: 0,
+    royalties: 0,
+    revenue: 0,
+    returns: 0,
+    markets: [],
+    products: [],
+    summary: ["Live sales data is unavailable."],
+  };
+}
+
+async function loadHomeData() {
+  const requestedPeriod = state.homePeriod;
+  const requestId = ++state.homeRequest;
+  state.homeLoading = true;
+  try {
+    const response = await fetch(`/api/home?period=${encodeURIComponent(requestedPeriod)}`, { cache: "no-store" });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (requestId !== state.homeRequest || requestedPeriod !== state.homePeriod) return;
+    state.homeData = data;
+    state.homeError = "";
+  } catch (error) {
+    if (requestId !== state.homeRequest || requestedPeriod !== state.homePeriod) return;
+    state.homeData = fallbackHomeData();
+    state.homeError = "Live sales data could not be loaded. Keep the Merch Agent server running and try again.";
+  } finally {
+    if (requestId !== state.homeRequest || requestedPeriod !== state.homePeriod) return;
+    state.homeLoading = false;
+    if (state.page === "home") render();
+  }
+}
+
+async function loadRoyaltyTier() {
+  try {
+    const response = await fetch("/api/royalty-tier", { cache: "no-store" });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    state.royaltyTier = await response.json();
+    state.royaltyTierError = "";
+  } catch (error) {
+    state.royaltyTier = null;
+    state.royaltyTierError = "Royalty tier data needs the v2 data server.";
+  }
+
+  if (state.page === "home") render();
+}
+
+async function loadSalesStatus() {
+  try {
+    const response = await fetch("/api/data-freshness", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.dataFreshness = await response.json();
+    state.salesStatus = state.dataFreshness.sales || null;
+  } catch (error) {
+    state.dataFreshness = null;
+    state.salesStatus = { status: "download_failed", lastError: "Data freshness could not be loaded." };
+  }
+  if (state.page === "more") render();
+}
+
+async function loadAIUsage() {
+  state.aiUsageError = "";
+  try {
+    const response = await fetch("/api/ai-usage", { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.aiUsage = await response.json();
+  } catch (error) {
+    state.aiUsageError = error?.message || "AI usage could not be loaded.";
+  }
+  if (state.page === "more") render();
+}
+
+async function loadRecommendationInteractions() {
+  try {
+    const response = await fetch("/api/recommendation-interactions", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.recommendationInteractions = (await response.json()).interactions || {};
+  } catch (error) {
+    state.recommendationInteractions = {};
+  }
+  if (state.page === "ai" && state.aiMode === "audit") render({ preserveScroll: true });
+}
+
+async function loadAdsData() {
+  try {
+    const params = new URLSearchParams({ period: state.adsPeriod });
+    if (state.adsPeriod === "custom") {
+      params.set("start", state.adsCustomStart);
+      params.set("end", state.adsCustomEnd);
+    }
+    const response = await fetch(`/api/ads?${params.toString()}`, { cache: "no-store" });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    state.adsData = await response.json();
+    state.adsError = "";
+  } catch (error) {
+    state.adsData = null;
+    state.adsError = "Showing sample ad metrics. Import an advertised product report to use live data.";
+  }
+
+  if (state.page === "ads") render();
+}
+
+async function loadDailyAudit() {
+  state.dailyAuditLoading = true;
+  try {
+    const response = await fetch("/api/daily-audit", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.dailyAudit = await response.json();
+    state.dailyAuditError = "";
+  } catch (error) {
+    state.dailyAudit = null;
+    state.dailyAuditError = "The daily audit could not be loaded from the data server.";
+  } finally {
+    state.dailyAuditLoading = false;
+  }
+  if (state.page === "ai" && state.aiMode === "audit") render({ preserveScroll: true });
+}
+
+async function uploadSalesReport(file) {
+  if (!file || state.salesUploadLoading) return;
+  state.salesUploadLoading = true;
+  state.salesUploadMessage = "";
+  state.salesUploadError = "";
+  render();
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("The file could not be read."));
+      reader.readAsDataURL(file);
+    });
+    const encoded = String(dataUrl || "").split(",", 2)[1] || "";
+    const response = await fetch("/api/sales-upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, data: encoded }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `Upload failed (${response.status})`);
+    state.salesUploadMessage = result.message || "Sales report synchronized.";
+    await Promise.all([loadHomeData(), loadSalesStatus(), loadAnalyticsData(), loadDailyAudit()]);
+  } catch (error) {
+    state.salesUploadError = error.message || "The sales report could not be uploaded.";
+  } finally {
+    state.salesUploadLoading = false;
+    render();
+  }
+}
+
+async function loadCampaignsData() {
+  try {
+    const response = await fetch("/api/campaigns?period=last30", { cache: "no-store" });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    state.campaignsData = await response.json();
+    state.campaignsError = "";
+  } catch (error) {
+    state.campaignsData = { campaigns: [] };
+    state.campaignsError = "Campaign data could not be loaded from the local database.";
+  }
+
+  if (state.page === "ads") render();
+}
+
+async function askAssistant(question) {
+  const cleanQuestion = String(question || "").trim();
+
+  if (!cleanQuestion || state.aiLoading) {
+    return;
+  }
+
+  state.aiMessages.push({ role: "user", text: cleanQuestion, evidence: [] });
+  state.aiLoading = true;
+  state.aiError = "";
+  state.aiScrollToBottom = true;
+  const requestedPeriod = assistantPeriodFromQuestion(cleanQuestion);
+  state.aiPeriod = requestedPeriod;
+  render();
+
+  try {
+    const response = await fetch("/api/assistant", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: cleanQuestion,
+        period: requestedPeriod,
+        conversationId: state.aiConversationId,
+        history: state.aiMessages.slice(-8).map(({ role, text }) => ({ role, text })),
+        recommendationContext: state.activeRecommendation?.context || null,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.conversationId) state.aiConversationId = data.conversationId;
+    state.aiMessages.push({
+      role: "ai",
+      text: data.answer,
+      evidence: data.evidence || [],
+      pendingLog: data.pendingLog || null,
+      fallbackLabel: data.fallbackLabel || "",
+      source: data.source || "",
+      saved: false,
+    });
+    if (data.action?.type === "navigate" && data.action.page) {
+      state.page = data.action.page;
+      if (data.action.adsTab) state.adsTab = data.action.adsTab;
+    }
+  } catch (error) {
+    state.aiError = error?.message || "The assistant could not reach the local data server. Please try again.";
+  } finally {
+    state.aiLoading = false;
+    state.aiScrollToBottom = true;
+    state.aiFocusComposer = state.page === "ai" && state.aiMode === "ask";
+    render();
+  }
+}
+
+function assistantPeriodFromQuestion(question) {
+  const text = String(question || "").toLowerCase();
+  if (/\byesterday\b/.test(text)) return "yesterday";
+  if (/\btoday\b/.test(text)) return "today";
+  if (/\b(?:last|past)\s+60\s+days?\b|\b60[\s-]*day\b/.test(text)) return "last60";
+  if (/\b(?:last|past)\s+30\s+days?\b|\b30[\s-]*day\b|\bthis month\b/.test(text)) return "last30";
+  if (/\b(?:last|past)\s+14\s+days?\b|\b14[\s-]*day\b|\btwo weeks?\b/.test(text)) return "last14";
+  if (/\b(?:last|past)\s+7\s+days?\b|\b7[\s-]*day\b|\b(?:last|past)\s+week\b/.test(text)) return "last7";
+  const recommendationPeriod = state.activeRecommendation?.context?.reportPeriod;
+  if (["today", "yesterday", "last7", "last14", "last30", "last60"].includes(recommendationPeriod)) {
+    return recommendationPeriod;
+  }
+  return state.aiPeriod || "last30";
+}
+
+async function loadChangeOptions() {
+  try {
+    const response = await fetch("/api/change-options", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.changeOptions = await response.json();
+    state.changeOptionsError = "";
+    if (!state.logCampaign && state.changeOptions.campaigns?.length) {
+      state.logCampaign = state.changeOptions.campaigns[0].name;
+    }
+  } catch (error) {
+    state.changeOptionsError = "Campaigns and recent changes could not be loaded.";
+  }
+  if (state.page === "ai" && state.aiMode === "log") render();
+}
+
+async function previewLoggedChange() {
+  const details = state.logDescription.trim();
+  if (!state.logCampaign || !state.logDate || !details || state.logLoading) {
+    state.logError = "Choose a campaign and date, then describe what changed.";
+    render();
+    return;
+  }
+
+  state.logMessages.push({ role: "user", text: details, evidence: [] });
+  state.logLoading = true;
+  state.logError = "";
+  state.logScrollToBottom = true;
+  render();
+
+  try {
+    const response = await fetch("/api/change-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        campaignName: state.logCampaign,
+        effectiveDate: state.logDate,
+        details,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `API returned ${response.status}`);
+    state.logMessages.push({
+      role: "ai",
+      text: data.answer,
+      evidence: ["Nothing has been saved yet."],
+      pendingLog: data.pendingLog,
+      saved: false,
+    });
+    state.logDescription = "";
+  } catch (error) {
+    state.logError = error.message || "The change could not be previewed.";
+  } finally {
+    state.logLoading = false;
+    state.logScrollToBottom = true;
+    render();
+  }
+}
+
+async function loadCampaignDetail(campaignName) {
+  if (!campaignName || state.campaignDetailLoading) return;
+  const requestId = ++state.campaignDetailRequest;
+  state.selectedCampaign = campaignName;
+  state.selectedAdGroup = "";
+  state.campaignDetail = null;
+  state.campaignDetailError = "";
+  state.campaignDetailLoading = true;
+  render();
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const response = await fetch(`/api/campaign-detail?period=last30&name=${encodeURIComponent(campaignName)}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    const detail = await response.json();
+    if (requestId === state.campaignDetailRequest) state.campaignDetail = detail;
+  } catch (error) {
+    if (requestId === state.campaignDetailRequest) {
+      state.campaignDetailError = error.name === "AbortError"
+        ? "Campaign details took too long to load. Please try again."
+        : "Campaign targets could not be loaded from the local database.";
+    }
+  } finally {
+    if (requestId === state.campaignDetailRequest) state.campaignDetailLoading = false;
+  }
+
+  if (requestId === state.campaignDetailRequest) render();
+}
+
+async function saveCampaignChange(messageIndex, source = "ai") {
+  const messages = source === "logger" ? state.logMessages : state.aiMessages;
+  const message = messages[messageIndex];
+  if (!message?.pendingLog || message.saved) return;
+
+  try {
+    const response = await fetch("/api/campaign-change", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message.pendingLog),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `API returned ${response.status}`);
+    message.saved = true;
+    message.pendingLog.summary = data.summary || campaignChangeSummary(message.pendingLog);
+    message.evidence = [`Saved ${data.loggedAt}`];
+    messages.push({
+      role: "ai",
+      text: `Logged: ${data.summary || campaignChangeSummary(message.pendingLog)}.`,
+      evidence: ["This entry will appear in the campaign's Change History."],
+    });
+    if (source === "logger") await loadChangeOptions();
+  } catch (error) {
+    if (source === "logger") state.logError = error.message || "The campaign change could not be saved.";
+    else state.aiError = error.message || "The campaign change could not be saved.";
+  }
+
+  if (source === "logger") state.logScrollToBottom = true;
+  else state.aiScrollToBottom = true;
+  render();
+}
+
+async function saveEditedCampaignChange(changeId, form) {
+  if (!changeId || !form || state.logLoading) return;
+  const campaignName = form.querySelector("[data-change-edit-campaign]")?.value || "";
+  const effectiveDate = form.querySelector("[data-change-edit-date]")?.value || "";
+  const details = form.querySelector("[data-change-edit-details]")?.value.trim() || "";
+  if (!campaignName || !effectiveDate || !details) {
+    state.logError = "Choose a campaign and date, then describe what changed.";
+    render({ preserveScroll: true });
+    return;
+  }
+
+  state.logLoading = true;
+  state.logError = "";
+  render({ preserveScroll: true });
+  try {
+    const response = await fetch("/api/campaign-change-edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: changeId, campaignName, effectiveDate, details }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `API returned ${response.status}`);
+    state.editingChangeId = "";
+    await loadChangeOptions();
+  } catch (error) {
+    state.logError = error.message || "The change-log entry could not be updated.";
+  } finally {
+    state.logLoading = false;
+    render({ preserveScroll: true });
+  }
+}
+
+async function loadAnalyticsData() {
+  try {
+    const params = new URLSearchParams({ period: state.period });
+    if (state.period === "Custom") {
+      params.set("start", state.analyticsCustomStart);
+      params.set("end", state.analyticsCustomEnd);
+    }
+    const response = await fetch(`/api/analytics?${params.toString()}`, { cache: "no-store" });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    state.analyticsData = await response.json();
+    state.analyticsError = state.analyticsData.error || "";
+  } catch (error) {
+    state.analyticsData = null;
+    state.analyticsError = "Analytics needs the v2 data server and daily sales imports.";
+  }
+
+  if (state.page === "analytics") render();
+}
+
+async function loadAdImpactData() {
+  try {
+    const response = await fetch("/api/ad-impact?limit=20", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.adImpactData = await response.json();
+    state.adImpactError = "";
+  } catch (error) {
+    state.adImpactData = null;
+    state.adImpactError = "Ad-impact analysis needs matching daily Merch and advertised-product reports.";
+  }
+  if (state.page === "analytics") render();
+}
+
+function moneyCard(label, value, delta) {
+  return `
+    <div class="metric">
+      <div class="label">${label}</div>
+      <div class="value">${value}</div>
+      ${delta ? `<div class="sub positive">${delta}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderMarketBreakdown(homeData) {
+  const dataMarkets = homeData.markets || [];
+
+  return `
+    <div class="hero-market-section">
+      <div class="row">
+        <h2 class="section-title">Sales and royalties by market</h2>
+        <span class="label positive">${homeData.source === "sqlite" ? "Live data" : "Sample"}</span>
+      </div>
+      <div class="market-grid">
+        ${dataMarkets.length ? dataMarkets.slice(0, 7).map((market) => `
+          <div class="market">
+            <div class="market-heading">
+              <span class="market-flag" role="img" aria-label="${escapeHtml(market.name)} flag">${marketFlag(market)}</span>
+              <span class="label">${escapeHtml(market.name)}</span>
+            </div>
+            <div class="market-units">${market.units || 0} sold</div>
+            <div class="market-royalty">${formatCurrency(market.royalties ?? market.revenue, market.currency || "USD")} ${escapeHtml(market.currency || "USD")} royalties</div>
+          </div>
+        `).join("") : `<div class="sub empty-state">No marketplace data is available for this period.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderProducts(homeData) {
+  const dataProducts = homeData.products || [];
+
+  return `
+    <div class="card">
+      <div class="row">
+        <h2 class="section-title">Latest Sales</h2>
+        <span class="label positive">${dataProducts.length}</span>
+      </div>
+      ${dataProducts.slice(0, 12).map((item, index) => `
+        <div class="product-row">
+          <div class="thumb ${productColor(index)}">${escapeHtml((item.title || "M").slice(0, 1).toUpperCase())}</div>
+          <div>
+            <div class="title">${escapeHtml(item.title)}</div>
+            <div class="sub">${escapeHtml(item.market || "Marketplace pending")} | ${item.units || 0} sold</div>
+          </div>
+          <div>
+            <div class="amount">${formatCurrency(item.royalty, item.currency || "USD")}</div>
+            <div class="sub positive">${escapeHtml(item.time || "")}</div>
+          </div>
+        </div>
+      `).join("") || `<div class="sub">No product sales are available for this period.</div>`}
+    </div>
+  `;
+}
+
+function renderHome() {
+  const homeData = state.homeData || fallbackHomeData();
+  const summary = homeData.summary?.length ? homeData.summary : fallbackHomeData().summary;
+  const briefing = homeData.businessBriefing;
+  const reportDate = homeData.periodStart && homeData.periodEnd && homeData.periodStart !== homeData.periodEnd
+    ? `${homeData.periodStart} to ${homeData.periodEnd}`
+    : homeData.reportDate || homeData.latestImport || "Latest import";
+  const estimatedUsdRoyalties = estimateUsdRoyalties(homeData.markets, homeData.royalties);
+  const expectedYesterday = new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
+  const isYesterdayBehind = homeData.period === "yesterday"
+    && /^\d{4}-\d{2}-\d{2}$/.test(String(homeData.reportDate || ""))
+    && homeData.reportDate < expectedYesterday;
+  const sourceMessages = [];
+  if (state.homeError) sourceMessages.push(state.homeError);
+  if (isYesterdayBehind) {
+    sourceMessages.push(`No Merch sales report is available for ${expectedYesterday} yet. Showing the latest imported day, ${homeData.reportDate}.`);
+  }
+  const sourceNote = sourceMessages.length
+    ? `<section class="card"><div class="sub">${sourceMessages.map(escapeHtml).join(" ")}</div></section>`
+    : "";
+
+  return `
+    <div class="stack">
+      <div class="chip-row" aria-label="Home date range">
+        ${[
+          ["yesterday", "Yesterday"],
+          ["last7", "7 Days"],
+          ["last14", "14 Days"],
+          ["last30", "30 Days"],
+        ].map(([value, label]) => `
+          <button type="button" class="chip ${value === state.homePeriod ? "active" : ""}" data-home-period="${value}">${label}</button>
+        `).join("")}
+      </div>
+      ${state.homeLoading ? `<section class="card"><div class="sub">Loading ${state.homePeriod === "last30" ? "30-day" : state.homePeriod === "last14" ? "14-day" : state.homePeriod === "last7" ? "7-day" : "yesterday's"} analysis...</div></section>` : ""}
+      ${sourceNote}
+      <section class="hero-card">
+        <div class="row">
+          <div>
+            <div class="label">All Markets</div>
+            <div class="sub">${escapeHtml(reportDate)}</div>
+          </div>
+          <span class="chip active">${homeData.period === "yesterday" ? "Yesterday" : homeData.period === "last7" ? "7 Days" : homeData.period === "last14" ? "14 Days" : homeData.period === "last30" ? "30 Days" : "Latest"}</span>
+        </div>
+        <div class="big-sales">${homeData.sales || 0}<div class="big-sales-royalties">≈ ${formatMoney(estimatedUsdRoyalties)} USD estimated royalties</div></div>
+        <div class="metric-grid">
+          ${moneyCard("Returns", String(homeData.returns || 0))}
+          ${moneyCard("Markets with sales", String((homeData.markets || []).filter((market) => Number(market.units || 0) > 0).length))}
+        </div>
+        ${renderMarketBreakdown(homeData)}
+      </section>
+      ${briefing ? `
+        <section class="card weekly-briefing">
+          <div class="row">
+            <div>
+              <h2 class="section-title">Weekly Business Briefing</h2>
+              <div class="sub">${escapeHtml(briefing.periodStart)} through ${escapeHtml(briefing.periodEnd)}</div>
+            </div>
+            <span class="trend-badge ${escapeHtml(briefing.sales.direction)}">Sales ${escapeHtml(briefing.sales.direction)}</span>
+          </div>
+          <div class="briefing-grid">
+            <div class="briefing-block">
+              <small>Sales behavior</small>
+              <strong>${briefing.sales.units} units</strong>
+              <p>${escapeHtml(briefing.sales.summary)}</p>
+            </div>
+            <div class="briefing-block">
+              <small>Advertising impact</small>
+              <strong>${formatMoney(briefing.ads.spend)} spend | ${Number(briefing.ads.acos || 0).toFixed(1)}% ACOS</strong>
+              <p>${escapeHtml(briefing.ads.summary)} ${escapeHtml(briefing.impactSummary)}</p>
+            </div>
+          </div>
+          <div class="opportunity-list">
+            <h3>Opportunities for the next day and week</h3>
+            ${briefing.opportunities.map((item, index) => `<div><span>${index + 1}</span><p>${escapeHtml(item)}</p></div>`).join("")}
+          </div>
+        </section>
+      ` : `
+        <section class="card soft-card">
+          <h2 class="section-title">Latest Summary</h2>
+          <div class="sub">${summary.map(escapeHtml).join(" ")}</div>
+        </section>
+      `}
+      ${renderProducts(homeData)}
+    </div>
+  `;
+}
+
+function bars(values) {
+  return `<div class="bar-chart">${values.map((value) => `<div class="bar" style="height:${value}%"></div>`).join("")}</div>`;
+}
+
+function formatShortDate(value) {
+  const date = new Date(`${value}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return value || "";
+  }
+
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function sampleAnalyticsData() {
+  return {
+    period: state.period,
+    startDate: "",
+    endDate: "",
+    dayCount: 0,
+    totals: { sales: 0, royalties: 0 },
+    points: [],
+  };
+}
+
+function analyticsPointsForGranularity(points) {
+  if (state.analyticsGranularity !== "monthly") return points;
+  const grouped = new Map();
+  points.forEach((point) => {
+    const key = String(point.date || "").slice(0, 7);
+    const month = grouped.get(key) || { date: `${key}-01`, sales: 0, royalties: 0 };
+    month.sales += Number(point.sales || 0);
+    month.royalties += Number(point.royalties || 0);
+    grouped.set(key, month);
+  });
+  return [...grouped.values()];
+}
+
+function renderComboChart(data) {
+  const points = analyticsPointsForGranularity(data.points || []);
+  const royaltyCurrency = data.royaltyChartCurrency || "USD";
+
+  if (!points.length) {
+    return `<div class="sub">No daily sales points are available for this period yet.</div>`;
+  }
+
+  const width = 640;
+  const height = 270;
+  const top = 24;
+  const right = 54;
+  const bottom = 22;
+  const left = 42;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const maxSales = Math.max(1, ...points.map((point) => point.sales || 0));
+  const maxRoyalties = Math.max(1, ...points.map((point) => point.royalties || 0));
+  const gap = points.length > 45 ? 2 : 5;
+  const slot = chartWidth / points.length;
+  const barWidth = Math.max(5, Math.min(15, slot - gap));
+
+  const yForSales = (value) => top + chartHeight - ((value || 0) / maxSales) * chartHeight;
+  const yForRoyalties = (value) => top + chartHeight - ((value || 0) / maxRoyalties) * chartHeight;
+  const xForIndex = (index) => left + slot * index + slot / 2;
+
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const y = top + chartHeight - ratio * chartHeight;
+    return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="#e8edf2" stroke-width="1" vector-effect="non-scaling-stroke" shape-rendering="crispEdges"/>`;
+  }).join("");
+  const scaleRatios = [0, 0.25, 0.5, 0.75, 1];
+  const royaltySymbol = { USD: "$", EUR: "€", GBP: "£", JPY: "¥" }[royaltyCurrency] || `${royaltyCurrency} `;
+  const salesAxis = [...scaleRatios].reverse().map((ratio) => Math.round(maxSales * ratio).toLocaleString());
+  const royaltiesAxis = [...scaleRatios].reverse().map((ratio) => `${royaltySymbol}${Math.round(maxRoyalties * ratio).toLocaleString()}`);
+
+  const barsSvg = state.analyticsShowSales
+    ? points.map((point, index) => {
+      const x = xForIndex(index) - barWidth / 2;
+      const y = yForSales(point.sales);
+      const barHeight = top + chartHeight - y;
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="1" fill="#e8f1ff" stroke="#79a5e6" stroke-width="1.15" vector-effect="non-scaling-stroke" shape-rendering="crispEdges"><title>${escapeHtml(formatShortDate(point.date))}: ${Number(point.sales || 0).toLocaleString()} units</title></rect>`;
+    }).join("")
+    : "";
+
+  const linePoints = points.map((point, index) => `${xForIndex(index).toFixed(2)},${yForRoyalties(point.royalties).toFixed(2)}`).join(" ");
+  const royaltiesSvg = state.analyticsShowRoyalties
+    ? `<polyline points="${linePoints}" fill="none" stroke="#e47c91" stroke-width="1.8" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+       ${points.map((point, index) => `<circle cx="${xForIndex(index).toFixed(2)}" cy="${yForRoyalties(point.royalties).toFixed(2)}" r="${points.length > 45 ? 1.7 : 2.5}" fill="#ffffff" stroke="#e47c91" stroke-width="1.5" vector-effect="non-scaling-stroke"><title>${escapeHtml(formatShortDate(point.date))}: ${formatCurrency(point.royalties || 0, royaltyCurrency)} royalties</title></circle>`).join("")}`
+    : "";
+
+  const labelStep = Math.max(1, Math.ceil((points.length - 1) / 4));
+  const labelIndexes = [];
+  for (let index = 0; index < points.length; index += labelStep) {
+    labelIndexes.push(index);
+  }
+  if (labelIndexes[labelIndexes.length - 1] !== points.length - 1) {
+    labelIndexes.push(points.length - 1);
+  }
+
+  return `
+    <div class="chart-scale-labels"><span>Units sold</span><span>${escapeHtml(royaltyCurrency)} royalties</span></div>
+    <div class="chart-with-axes">
+      <div class="chart-y-axis left-axis">${state.analyticsShowSales ? salesAxis.map((label) => `<span>${label}</span>`).join("") : ""}</div>
+      <svg class="combo-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Sales and ${escapeHtml(royaltyCurrency)} royalties analytics chart">
+        ${grid}
+        <line x1="${left}" y1="${top + chartHeight}" x2="${width - right}" y2="${top + chartHeight}" stroke="#d8e1e8" stroke-width="1" vector-effect="non-scaling-stroke" shape-rendering="crispEdges"/>
+        ${barsSvg}
+        ${royaltiesSvg}
+      </svg>
+      <div class="chart-y-axis right-axis">${state.analyticsShowRoyalties ? royaltiesAxis.map((label) => `<span>${label}</span>`).join("") : ""}</div>
+    </div>
+    <div class="chart-axis-labels" style="grid-template-columns: repeat(${labelIndexes.length}, minmax(0, 1fr));">
+      ${labelIndexes.map((index) => `<span>${escapeHtml(formatShortDate(points[index].date))}</span>`).join("")}
+    </div>
+    <div class="chart-legend">
+      ${state.analyticsShowSales ? "<span><i class='legend-dot legend-sales'></i>Sales</span>" : ""}
+      ${state.analyticsShowRoyalties ? `<span><i class='legend-dot legend-royalties'></i>${escapeHtml(royaltyCurrency)} Royalties</span>` : ""}
+    </div>
+  `;
+}
+
+function renderAnalytics() {
+  const data = state.analyticsData || sampleAnalyticsData();
+  const points = data.points || [];
+  const totals = data.totals || {};
+  const royaltyBreakdown = data.royaltyByCurrency || [];
+  const royaltySummary = royaltyBreakdown.length
+    ? royaltyBreakdown.map((item) => formatCurrency(item.amount, item.currency)).join(" + ")
+    : formatCurrency(totals.royalties, data.royaltyChartCurrency || "USD");
+  const errorNote = state.analyticsError
+    ? `<section class="card"><div class="sub">${escapeHtml(state.analyticsError)}</div></section>`
+    : "";
+
+  return `
+    <div class="stack">
+      <div class="analytics-heading">
+        <h2>Analytics</h2>
+        <div class="sub">${escapeHtml(data.startDate || "")} - ${escapeHtml(data.endDate || "")}</div>
+        <div class="sub">${data.dayCount || points.length}-day window | ${data.availableDayCount ?? points.length} days available</div>
+      </div>
+      <div class="chip-row">
+        ${["7D", "30D", "90D", "1Y", "Custom"].map((label) => `<button class="chip ${label === state.period ? "active" : ""}" data-period="${label}">${label}</button>`).join("")}
+      </div>
+      ${state.period === "Custom" ? `
+        <div class="custom-range">
+          <label>Start<input type="date" data-analytics-custom-start value="${escapeHtml(state.analyticsCustomStart)}"></label>
+          <label>End<input type="date" data-analytics-custom-end value="${escapeHtml(state.analyticsCustomEnd)}"></label>
+          <button type="button" class="primary-button" data-analytics-custom-apply>Apply</button>
+        </div>
+      ` : ""}
+      ${errorNote}
+      <section class="card analytics-chart-card">
+        <div class="analytics-controls">
+          <div>
+            <div class="analytics-control-label">Chart style</div>
+            <div class="analytics-toggle-row">
+              <button class="chip ${state.analyticsGranularity === "daily" ? "active" : ""}" data-analytics-granularity="daily">Daily</button>
+              <button class="chip ${state.analyticsGranularity === "monthly" ? "active" : ""}" data-analytics-granularity="monthly">Monthly</button>
+            </div>
+          </div>
+          <div>
+            <div class="analytics-control-label">Toggle data</div>
+            <div class="analytics-toggle-row">
+              <button class="chip ${state.analyticsShowSales ? "active" : ""}" data-analytics-toggle="sales">Sales</button>
+              <button class="chip ${state.analyticsShowRoyalties ? "active" : ""}" data-analytics-toggle="royalties">USD Royalties</button>
+            </div>
+          </div>
+        </div>
+        ${renderComboChart(data)}
+      </section>
+      <section class="metric-grid">
+        ${moneyCard("Sales", Number(totals.sales || 0).toLocaleString(), `${points.length} daily points`)}
+        ${moneyCard("Reported royalties", royaltySummary, "Kept in original currencies")}
+      </section>
+      ${renderAdImpact()}
+    </div>
+  `;
+}
+
+function renderAdImpact() {
+  const data = state.adImpactData;
+  if (state.adImpactError) {
+    return `<section class="card ad-impact-card"><h2 class="section-title">Possible ad impact on total sales</h2><div class="sub">${escapeHtml(state.adImpactError)}</div></section>`;
+  }
+  if (!data) {
+    return `<section class="card ad-impact-card"><h2 class="section-title">Possible ad impact on total sales</h2><div class="sub">Cross-referencing historical daily Merch sales with advertised-product performance...</div></section>`;
+  }
+  const summary = data.summary || {};
+  const findings = data.findings || [];
+  const confidenceClass = (value) => String(value || "low").toLowerCase();
+  const impactValue = (window, field, suffix = "") => window && Number.isFinite(Number(window[field]))
+    ? `${Number(window[field]).toFixed(field === "impressionsPerDay" ? 0 : 2)}${suffix}`
+    : "Not available";
+  const windowMetrics = (label, window) => `
+    <div class="impact-window">
+      <div class="label">${label}</div>
+      <div class="impact-window-grid">
+        <span>Total sales/day <strong>${impactValue(window, "totalUnitsPerDay")}</strong></span>
+        <span>Attributed units/day <strong>${impactValue(window, "attributedUnitsPerDay")}</strong></span>
+        <span>Estimated non-attributed/day <strong>${impactValue(window, "estimatedNonAttributedUnitsPerDay")}</strong></span>
+        <span>Spend/day <strong>${impactValue(window, "spendPerDay", "") === "Not available" ? "Not available" : formatMoney(window.spendPerDay)}</strong></span>
+        <span>Impressions/day <strong>${impactValue(window, "impressionsPerDay")}</strong></span>
+      </div>
+    </div>`;
+  return `
+    <section class="card ad-impact-card">
+      <div class="row">
+        <div>
+          <h2 class="section-title">Possible ad impact on total sales</h2>
+          <div class="sub">${summary.salesDates || 0} sales dates through ${escapeHtml(summary.salesDataThrough || "the latest import")} | Ads compared through ${escapeHtml(summary.comparisonDataThrough || summary.adDataThrough || "the latest matching report")} | ${summary.matchedProducts || 0} ASINs matched directly</div>
+        </div>
+        <span class="status-pill review">Evidence, not attribution</span>
+      </div>
+      <div class="sub ad-impact-intro">This checks whether changes in ad exposure line up with total Merch sales, including sales Amazon did not directly attribute to ads. It accounts for account-wide sales movement where possible.</div>
+      ${findings.length ? `<div class="ad-impact-list">${findings.map((item) => {
+        const evidence = item.evidence || {};
+        const correlations = evidence.correlations || {};
+        const strongest = ["impressions", "clicks", "spend"].flatMap((metric) => Object.entries(correlations[metric] || {}).map(([lag, value]) => ({ metric, lag, value }))).sort((a, b) => Number(b.value) - Number(a.value))[0];
+        const intervention = item.strongestEvidence;
+        const alternatives = item.alternativeExplanations?.filter(Boolean) || ["No additional limitations were recorded; treat this as evidence, not proof of causation."];
+        return `
+          <article class="ad-impact-finding">
+            <div class="ad-impact-finding-head">
+              <div><div class="title">${escapeHtml(item.design)}</div><div class="sub">${escapeHtml(item.category)} | ${escapeHtml(item.evidenceType || "Insufficient data")}</div></div>
+              <span class="impact-confidence ${confidenceClass(item.confidence)}">${escapeHtml(item.confidence)}</span>
+            </div>
+            <div class="ad-impact-conclusion">${escapeHtml(item.finding)}</div>
+            <div class="ad-impact-campaign"><strong>Campaign conclusion:</strong> ${escapeHtml(item.campaignConclusion || "Needs controlled test")}</div>
+            ${intervention ? `
+              <div class="ad-impact-evidence"><strong>Strongest evidence:</strong> ${escapeHtml(intervention.change_type || "Campaign change")} on ${escapeHtml(intervention.date || "an unknown date")}${intervention.details ? ` | ${escapeHtml(intervention.details)}` : ""}</div>
+              <div class="impact-windows">
+                ${windowMetrics("7 days before", intervention.before7)}
+                ${windowMetrics("Days 1-7 after", intervention.after7)}
+              </div>
+              <div class="ad-impact-evidence"><strong>Account-wide sales change:</strong> ${intervention.accountChangePercent == null ? "Not available" : `${Number(intervention.accountChangePercent).toFixed(1)}%`} | <strong>Design change:</strong> ${intervention.designChangePercent == null ? "Not available" : `${Number(intervention.designChangePercent).toFixed(1)}%`} | <strong>Account-adjusted non-attributed change:</strong> ${intervention.accountAdjustedNonAttributedUnitsPerDay == null ? "Not available" : `${Number(intervention.accountAdjustedNonAttributedUnitsPerDay).toFixed(2)} units/day`}</div>
+            ` : `<div class="ad-impact-evidence"><strong>Strongest evidence:</strong> ${escapeHtml(item.why)}</div>`}
+            ${item.estimatedIndirectEffect ? `<div class="ad-impact-estimate"><strong>Estimated indirect effect:</strong> ${escapeHtml(item.estimatedIndirectEffect)}</div>` : ""}
+            <div class="ad-impact-stats">
+              <span>${evidence.totalUnits || 0} total units</span>
+              <span>${Number(evidence.attributedUnits || 0).toFixed(1)} attributed units</span>
+              <span>${Number(evidence.estimatedNonAttributedUnits || 0).toFixed(1)} estimated non-attributed</span>
+              <span>${evidence.activeAdDays || 0} active-ad days</span>
+            </div>
+            ${!intervention && strongest ? `<div class="sub">Correlation evidence only: ${escapeHtml(strongest.metric)} ${Number(strongest.lag) === 0 ? "same day" : `${strongest.lag} day(s) later`} (r=${Number(strongest.value).toFixed(2)}).</div>` : ""}
+            ${item.controlledTest ? `<div class="ad-impact-test"><strong>Suggested controlled test:</strong> ${escapeHtml(item.controlledTest)}</div>` : ""}
+            <details class="ad-impact-details"><summary>Limitations and alternative explanations</summary><ul>${alternatives.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul></details>
+          </article>`;
+      }).join("")}</div>` : `<div class="sub">No products have enough matched daily sales and advertised-product history yet. Keep importing daily advertised-product reports to build this evidence.</div>`}
+      <details class="ad-impact-details"><summary>How to read this</summary><ul>${(data.limitations || []).map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul></details>
+    </section>
+  `;
+}
+
+function percent(value) {
+  return `${(Number(value || 0) * 100).toFixed(1)}%`;
+}
+
+function tierClass(tierName) {
+  const name = String(tierName || "").toLowerCase();
+  if (name === "premium") return "premium";
+  if (name === "plus") return "plus";
+  return "";
+}
+
+function renderRoyaltyTierTracker() {
+  const data = state.royaltyTier;
+
+  if (state.royaltyTierError) {
+    return `<section class="card"><div class="sub">${escapeHtml(state.royaltyTierError)}</div></section>`;
+  }
+
+  if (!data?.primary) {
+    const requirements = data?.requirements || {};
+    return `
+      <section class="card tier-card">
+        <div class="row">
+          <div>
+            <h2 class="section-title">Royalty Tier Tracker</h2>
+            <div class="sub">Trailing 60 Days</div>
+          </div>
+          <span class="status-pill review">Incomplete</span>
+        </div>
+        <div class="sub">${escapeHtml(data?.summary || "Import matching sales and campaign reports to calculate royalty tier progress.")}</div>
+        <div class="tier-requirements">
+          <div><span class="requirement-dot ${requirements.sales ? "ready" : ""}"></span><strong>60-day Merch sales</strong><span>${requirements.sales ? "Ready" : "Needed"}</span></div>
+          <div><span class="requirement-dot ${requirements.ads ? "ready" : ""}"></span><strong>60-day Amazon Ads</strong><span>${requirements.ads ? "Ready" : "Needed"}</span></div>
+        </div>
+      </section>
+    `;
+  }
+
+  const primary = data.primary;
+  const premiumProgress = Math.min(100, Math.round((primary.nonOrganicRatio / 0.35) * 100));
+  const tierName = primary.tier?.name || "Creator";
+  const multiplier = primary.tier?.multiplier || "1x";
+  const premiumGap = data.progress?.premiumGap || 0;
+  const cards = data.cards || [];
+  const cappedNote = primary.isCapped
+    ? "<div class='sub'>Ad orders were higher than imported units for this period, so the tracker capped non-organic share at 100%.</div>"
+    : "";
+
+  return `
+    <section class="card tier-card ${tierClass(tierName)}">
+      <div class="row">
+        <div>
+          <h2 class="section-title">Royalty Tier Tracker</h2>
+          <div class="sub">${escapeHtml(primary.label)}${primary.reportDate ? ` | ${escapeHtml(primary.reportDate)}` : ""}</div>
+        </div>
+        <div class="tier-badge">
+          <strong>${escapeHtml(tierName)}</strong>
+          <span class="sub">${escapeHtml(multiplier)} royalty</span>
+        </div>
+      </div>
+      <div class="tier-split">
+        <div class="tier-split-box">
+          <div class="label">Non-Organic</div>
+          <div class="tier-percent non-organic">${percent(primary.nonOrganicRatio)}</div>
+          <div class="sub">${primary.adOrders || 0} ad orders</div>
+        </div>
+        <div class="tier-split-box">
+          <div class="label">Organic</div>
+          <div class="tier-percent organic">${percent(primary.organicRatio)}</div>
+          <div class="sub">${primary.organicUnits || 0} organic units</div>
+        </div>
+      </div>
+      <div class="tier-progress"><span style="width:${premiumProgress}%"></span></div>
+      <div class="sub">${premiumGap > 0 ? `${percent(premiumGap)} needed for Premium` : "Premium threshold reached"}</div>
+      ${cappedNote}
+    </section>
+    <section class="card">
+      <h2 class="section-title">Reference Windows</h2>
+      <div class="sub">Only Trailing 60 Days is used for the tier estimate. Shorter windows are shown for context.</div>
+      <div class="tier-mini-grid">
+        ${cards.slice(0, 3).map((card) => `
+          <div class="tier-mini">
+            <div class="row">
+              <div>
+                <div class="title">${escapeHtml(card.label)}</div>
+                <div class="sub">${card.units || 0} units | ${card.adOrders || 0} ad orders</div>
+              </div>
+              <div class="amount">${percent(card.nonOrganicRatio)}</div>
+            </div>
+            <div class="tier-progress"><span style="width:${Math.min(100, Math.round((card.nonOrganicRatio / 0.35) * 100))}%"></span></div>
+            <div class="sub">${escapeHtml(card.tier?.name || "Creator")} estimate</div>
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderCampaignList() {
+  const allCampaigns = state.campaignsData?.campaigns || [];
+  const search = state.campaignSearch.trim().toLowerCase();
+  const campaignsList = allCampaigns.filter((item) => !search || item.name.toLowerCase().includes(search));
+  const errorNote = state.campaignsError ? `<section class="card"><div class="sub">${escapeHtml(state.campaignsError)}</div></section>` : "";
+
+  return `
+    <input class="search" data-campaign-search value="${escapeHtml(state.campaignSearch)}" placeholder="Search ${state.campaignsData?.count || allCampaigns.length} campaigns">
+    ${errorNote}
+    <section class="card">
+      <div class="row">
+        <h2 class="section-title">Campaign Performance</h2>
+        <span class="label positive">Last 30 days</span>
+      </div>
+      ${campaignsList.length ? campaignsList.map((item) => `
+        <button type="button" class="campaign-detail-row campaign-open-button" data-campaign-name="${escapeHtml(item.name)}">
+          <div class="campaign-detail-heading">
+            <div>
+              <div class="title">${escapeHtml(item.name)}</div>
+              <div class="sub">${escapeHtml(item.country || "Marketplace")} | ${item.clicks} clicks | ${item.orders} orders</div>
+            </div>
+            <span class="status-pill ${item.status}">${item.status === "performing" ? "Performing" : item.status === "review" ? "Review" : "Watch"}</span>
+          </div>
+          <div class="campaign-metrics">
+            <span><small>Spend</small>${formatCurrency(item.spend, item.currency || "USD")}</span>
+            <span><small>Sales</small>${formatCurrency(item.sales, item.currency || "USD")}</span>
+            <span><small>ROAS</small>${Number(item.roas || 0).toFixed(2)}</span>
+            <span><small>ACOS</small>${Number(item.acos || 0).toFixed(1)}%</span>
+          </div>
+          <div class="campaign-open-label">View bids and targets <span aria-hidden="true">&#8250;</span></div>
+        </button>
+      `).join("") : `<div class="sub">No campaigns match this search.</div>`}
+    </section>
+  `;
+}
+
+function renderCampaignDetail() {
+  if (state.campaignDetailError) {
+    return `<section class="card"><div class="negative sub">${escapeHtml(state.campaignDetailError)}</div></section>`;
+  }
+
+  if (!state.campaignDetail) {
+    return `<section class="card"><div class="sub">${state.campaignDetailLoading ? "Loading campaign bids and targets..." : "Campaign details are not available."}</div></section>`;
+  }
+
+  const data = state.campaignDetail;
+  const campaign = data.campaign || { name: state.selectedCampaign };
+  const adGroups = data.adGroups || [];
+  const allTargets = data.targets || [];
+  const targets = state.selectedAdGroup
+    ? allTargets.filter((item) => item.adGroupName === state.selectedAdGroup)
+    : allTargets;
+  const changes = data.changes || [];
+
+  return `
+    <section class="card campaign-detail-header">
+      <div class="title">${escapeHtml(campaign.name)}</div>
+      <div class="sub">Campaign report ending ${escapeHtml(campaign.reportDate || "latest")}</div>
+      <div class="campaign-metrics detail-summary">
+        <span><small>Spend</small>${formatCurrency(campaign.spend || 0, campaign.currency || "USD")}</span>
+        <span><small>Sales</small>${formatCurrency(campaign.sales || 0, campaign.currency || "USD")}</span>
+        <span><small>Orders</small>${campaign.orders || 0}</span>
+        <span><small>ROAS</small>${Number(campaign.roas || 0).toFixed(2)}</span>
+      </div>
+    </section>
+    <section class="card">
+      <div class="row">
+        <h2 class="section-title">Ad Groups</h2>
+        <span class="label">${adGroups.length} total</span>
+      </div>
+      ${adGroups.length ? `
+        <button type="button" class="ad-group-row ${state.selectedAdGroup ? "" : "active"}" data-ad-group="">
+          <span><strong>All ad groups</strong><small>${allTargets.length} targets</small></span>
+          <span class="ad-group-action">Show all</span>
+        </button>
+        ${adGroups.map((group) => `
+          <button type="button" class="ad-group-row ${state.selectedAdGroup === group.name ? "active" : ""}" data-ad-group="${escapeHtml(group.name)}">
+            <span><strong>${escapeHtml(group.name)}</strong><small>${group.targetCount} targets | ${group.clicks} clicks | ${group.orders} orders</small></span>
+            <span class="ad-group-summary"><strong>${formatCurrency(group.spend, campaign.currency || "USD")}</strong><small>${Number(group.roas || 0).toFixed(2)} ROAS</small></span>
+          </button>
+        `).join("")}
+      ` : `<div class="sub">No ad-group names are available in the latest targeting report.</div>`}
+    </section>
+    <section class="card">
+      <div class="row">
+        <h2 class="section-title">${state.selectedAdGroup ? `${escapeHtml(state.selectedAdGroup)} Bids` : "Bids and Targets"}</h2>
+        <span class="label">Report ending ${escapeHtml(data.targetReportDate || "not available")}</span>
+      </div>
+      ${targets.length ? targets.map((item) => `
+        <div class="target-row">
+          <div class="target-heading">
+            <div>
+              <div class="title">${escapeHtml(item.target)}</div>
+              <div class="sub">${escapeHtml(item.matchType || "Automatic target")}</div>
+            </div>
+            <div class="bid-value"><small>Current bid</small>${formatCurrency(item.bid, campaign.currency || "USD")}</div>
+          </div>
+          <div class="target-metrics">
+            <span><small>Clicks</small>${item.clicks}</span>
+            <span><small>Spend</small>${formatCurrency(item.spend, campaign.currency || "USD")}</span>
+            <span><small>Orders</small>${item.orders}</span>
+            <span><small>Sales</small>${formatCurrency(item.sales, campaign.currency || "USD")}</span>
+            <span><small>ROAS</small>${Number(item.roas || 0).toFixed(2)}</span>
+          </div>
+        </div>
+      `).join("") : `<div class="sub">No target rows are available for this campaign in the latest 30-day targeting report.</div>`}
+    </section>
+    <section class="card">
+      <div class="row">
+        <h2 class="section-title">Change History</h2>
+        <span class="label">${changes.length} logged</span>
+      </div>
+      ${changes.length ? changes.map((item) => `
+        <div class="change-row">
+          <div class="title">${escapeHtml(item.summary || item.changeType)}</div>
+          <div class="sub">${escapeHtml(item.details)}</div>
+          <div class="sub">${item.effectiveDate ? `Effective ${escapeHtml(item.effectiveDate)} | ` : ""}Logged ${escapeHtml(item.loggedAt)}</div>
+        </div>
+      `).join("") : `<div class="sub">No changes have been logged for this campaign yet. Tell the AI Assistant what you changed to add the first entry.</div>`}
+    </section>
+  `;
+}
+
+function adsPeriodLabel(period) {
+  return {
+    today: "Today",
+    yesterday: "Yesterday",
+    last7: "7 Days",
+    last14: "14 Days",
+    last30: "30 Days",
+    last60: "60 Days",
+    custom: "Custom",
+  }[period] || "Today";
+}
+
+function advertisedProductStatus(item) {
+  const spend = Number(item?.spend || 0);
+  const sales = Number(item?.sales || 0);
+  if (spend <= 0) return { tone: "inactive", label: "No spend" };
+  if (sales <= 0 && spend < 5) return { tone: "gathering", label: "Gathering data" };
+  if (sales <= 0) return { tone: "review", label: "No sales yet" };
+  const acos = spend / sales * 100;
+  return acos <= 20
+    ? { tone: "performing", label: "At target" }
+    : { tone: "review", label: `ACOS ${acos.toFixed(1)}%` };
+}
+
+function renderAdsPerformance(data) {
+  const daily = data?.daily || [];
+  if (!daily.length) {
+    return `<section class="card"><h2 class="section-title">Performance</h2><div class="sub">No daily Ads performance is available for this range yet.</div></section>`;
+  }
+
+  const chartWidth = Math.max(420, daily.length * 24);
+  const chartHeight = 142;
+  const maxImpressions = Math.max(1, ...daily.map((day) => Number(day.impressions || 0)));
+  const maxOrders = Math.max(1, ...daily.map((day) => Number(day.orders || 0)));
+  const maxAcos = Math.max(1, ...daily.map((day) => Number(day.acos || 0)));
+  const step = chartWidth / daily.length;
+  const point = (day, index, field, maximum) => {
+    const x = Math.round(index * step + step / 2);
+    const y = Math.round(chartHeight - 18 - (Number(day[field] || 0) / maximum) * (chartHeight - 42));
+    return `${x},${y}`;
+  };
+  const orderPoints = daily.map((day, index) => point(day, index, "orders", maxOrders)).join(" ");
+  const acosPoints = daily.map((day, index) => point(day, index, "acos", maxAcos)).join(" ");
+  const total = daily.reduce((sum, day) => ({
+    spend: sum.spend + Number(day.spend || 0),
+    impressions: sum.impressions + Number(day.impressions || 0),
+    orders: sum.orders + Number(day.orders || 0),
+    sales: sum.sales + Number(day.sales || 0),
+  }), { spend: 0, impressions: 0, orders: 0, sales: 0 });
+  const totalAcos = total.sales ? (total.spend / total.sales) * 100 : 0;
+  const showEvery = daily.length > 35 ? 7 : daily.length > 16 ? 4 : daily.length > 9 ? 2 : 1;
+
+  return `
+    <section class="card ads-performance">
+      <div class="row">
+        <div>
+          <h2 class="section-title">Performance</h2>
+          <div class="sub">${escapeHtml(data.rangeStart || "")} to ${escapeHtml(data.rangeEnd || data.reportDate || "")}${data.partial ? " | Today is partial" : ""}</div>
+        </div>
+      </div>
+      <div class="performance-legend">
+        <div><span class="legend-swatch spend"></span><small>Total cost</small><strong>${formatMoney(total.spend)}</strong></div>
+        <div><span class="legend-swatch impressions"></span><small>Impressions</small><strong>${total.impressions.toLocaleString()}</strong></div>
+        <div><span class="legend-swatch acos"></span><small>ACOS</small><strong>${totalAcos.toFixed(1)}%</strong></div>
+        <div><span class="legend-swatch orders"></span><small>Purchases</small><strong>${total.orders.toLocaleString()}</strong></div>
+      </div>
+      <div class="performance-scroll">
+        <div class="performance-plot">
+          <div class="impression-bars" aria-hidden="true">
+            ${daily.map((day) => `<span style="height:${Math.max(2, Math.round((Number(day.impressions || 0) / maxImpressions) * 82))}%"></span>`).join("")}
+          </div>
+          <svg viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" aria-label="Daily ACOS and purchases trend">
+            <polyline class="chart-line acos" points="${acosPoints}"></polyline>
+            <polyline class="chart-line orders" points="${orderPoints}"></polyline>
+          </svg>
+          <div class="performance-dates">
+            ${daily.map((day, index) => `<span>${index % showEvery === 0 || index === daily.length - 1 ? escapeHtml(String(day.date || "").slice(5)) : ""}</span>`).join("")}
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderAds() {
+  const adsTabs = ["Overview", "Campaigns", "Royalty"];
+  const adsData = state.adsData;
+  const metrics = adsData?.metrics;
+  const topProducts = adsData?.topProducts || [];
+  const adsSourceNote = state.adsError
+    ? `<section class="card"><div class="sub">${escapeHtml(state.adsError)}</div></section>`
+    : "";
+  const periodControls = `
+    <div class="chip-row" aria-label="Ads date range">
+      ${[
+        ["today", "Today"],
+        ["yesterday", "Yesterday"],
+        ["last7", "7 Days"],
+        ["last14", "14 Days"],
+        ["last30", "30 Days"],
+        ["last60", "60 Days"],
+        ["custom", "Custom"],
+      ].map(([value, label]) => `<button type="button" class="chip ${state.adsPeriod === value ? "active" : ""}" data-ads-period="${value}">${label}</button>`).join("")}
+    </div>
+    ${state.adsPeriod === "custom" ? `
+      <div class="custom-range">
+        <label>Start<input type="date" data-ads-custom-start value="${escapeHtml(state.adsCustomStart)}"></label>
+        <label>End<input type="date" data-ads-custom-end value="${escapeHtml(state.adsCustomEnd)}"></label>
+        <button type="button" class="primary-button" data-ads-custom-apply>Apply</button>
+      </div>
+    ` : ""}
+  `;
+
+  if (state.adsTab === "Royalty") {
+    return `
+      <div class="stack">
+        <div class="chip-row">
+          ${adsTabs.map((label) => `<button class="chip ${label === state.adsTab ? "active" : ""}" data-ads-tab="${label}">${label}</button>`).join("")}
+        </div>
+        ${renderRoyaltyTierTracker()}
+      </div>
+    `;
+  }
+
+  if (state.adsTab === "Campaigns") {
+    return `
+      <div class="stack">
+        <div class="chip-row">
+          ${adsTabs.map((label) => `<button type="button" class="chip ${label === state.adsTab ? "active" : ""}" data-ads-tab="${label}">${label}</button>`).join("")}
+        </div>
+        ${state.selectedCampaign ? renderCampaignDetail() : renderCampaignList()}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="stack">
+      <div class="chip-row">
+        ${adsTabs.map((label) => `<button class="chip ${label === state.adsTab ? "active" : ""}" data-ads-tab="${label}">${label}</button>`).join("")}
+      </div>
+      ${periodControls}
+      ${adsSourceNote}
+      <div class="metric-grid">
+        ${moneyCard("Ad Spend", metrics ? formatMoney(metrics.spend) : "$0.00", metrics ? `${adsPeriodLabel(state.adsPeriod)}${adsData?.partial ? " | partial" : ""}` : "No data")}
+        ${moneyCard("Ad Sales", metrics ? formatMoney(metrics.sales) : "$0.00", metrics ? `${metrics.orders} orders` : "No data")}
+        ${moneyCard("ACOS", metrics ? `${metrics.acos}%` : "-", metrics ? `${metrics.units} units` : "No data")}
+        ${moneyCard("ROAS", metrics ? String(metrics.roas) : "-", metrics ? `${metrics.asins} ASINs` : "No data")}
+        ${moneyCard("Clicks", metrics ? Number(metrics.clicks || 0).toLocaleString() : "0", metrics ? `${metrics.ctr}% CTR` : "No data")}
+        ${moneyCard("Impressions", metrics ? Number(metrics.impressions || 0).toLocaleString() : "0", metrics ? `${formatMoney(metrics.cpc)} CPC` : "No data")}
+      </div>
+      ${renderAdsPerformance(adsData)}
+      <section class="card">
+        <div class="row">
+          <h2 class="section-title">Top Advertised Products</h2>
+          <span class="label">Report ending ${escapeHtml(adsData?.reportDate || "latest")}</span>
+        </div>
+        ${topProducts.length ? topProducts.map((item) => {
+          const status = advertisedProductStatus(item);
+          return `
+          <div class="ad-product-row">
+            <div class="ad-product-heading">
+              <div>
+              <div class="title">${escapeHtml(item.campaignName || item.name)}</div>
+                <div class="sub">${escapeHtml(item.asin || "Campaign summary")}</div>
+              </div>
+              <span class="status-pill ${status.tone}">${status.label}</span>
+            </div>
+            <div class="ad-product-metrics">
+              <span><small>Spend</small>${formatCurrency(item.spend || 0, item.currency || "USD")}</span>
+              <span><small>Ad Sales</small>${formatCurrency(item.sales || 0, item.currency || "USD")}</span>
+              <span><small>Orders</small>${Number(item.orders || 0).toLocaleString()}</span>
+              <span><small>ROAS</small>${Number(item.roas || 0).toFixed(2)}</span>
+              <span><small>ACOS</small>${Number(item.sales || 0) ? ((Number(item.spend || 0) / Number(item.sales)) * 100).toFixed(1) + "%" : "-"}</span>
+            </div>
+          </div>
+        `}).join("") : `<div class="sub">No advertised product data is available for this period.</div>`}
+      </section>
+    </div>
+  `;
+}
+
+function renderAssistantText(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  let html = '<div class="assistant-answer-text">';
+  let listOpen = false;
+  const renderInline = (value) => escapeHtml(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isBullet = trimmed.startsWith("•") || trimmed.startsWith("- ");
+    if (isBullet) {
+      if (!listOpen) {
+        html += '<ul class="assistant-answer-list">';
+        listOpen = true;
+      }
+      html += `<li>${renderInline(trimmed.replace(/^(•|-)\s*/, ""))}</li>`;
+    } else {
+      if (listOpen) {
+        html += "</ul>";
+        listOpen = false;
+      }
+      const normalizedHeading = trimmed
+        .replace(/^#{1,6}\s*/, "")
+        .replace(/^\*\*(.+)\*\*$/, "$1")
+        .replace(/:$/, "");
+      const isHeading = ["Verified facts", "Calculation", "Calculations", "Recommendation", "Recommendations", "Inference", "Inferences", "Unavailable data"].includes(normalizedHeading);
+      if (trimmed) html += isHeading
+        ? `<strong class="assistant-answer-heading">${escapeHtml(normalizedHeading)}</strong>`
+        : `<p>${renderInline(trimmed)}</p>`;
+    }
+  }
+  if (listOpen) html += "</ul>";
+  return `${html}</div>`;
+}
+
+function renderAssistantMessage(message, index, source) {
+  return `
+    <div class="bubble ${message.role} ${message.pendingLog ? "has-pending-log" : ""}">
+      ${message.fallbackLabel ? `<div class="status-pill watch">${escapeHtml(message.fallbackLabel)}</div>` : ""}
+      ${renderAssistantText(message.text)}
+      ${message.evidence?.length ? `
+        <div class="evidence-list">
+          <strong>${message.saved && message.pendingLog ? "Log receipt" : "Data used"}</strong>
+          ${message.evidence.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+        </div>
+      ` : ""}
+      ${message.pendingLog ? `
+        <div class="change-confirmation">
+          <strong>${message.saved ? "Saved" : "Confirm campaign change"}</strong>
+          <span>${escapeHtml(campaignChangeSummary(message.pendingLog))}</span>
+          <button type="button" class="log-change-button ${message.saved ? "saved" : ""}" data-log-change="${index}" data-log-source="${source}" ${message.saved ? "disabled" : ""}>${message.saved ? "Change logged" : "Confirm and log change"}</button>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderAskAssistant() {
+  const suggestions = [
+    "Summarize today's daily audit",
+    "Which bids should I change?",
+    "Which search terms need attention?",
+    "What sales opportunities should I review?",
+  ];
+
+  return `
+    <div class="stack assistant-workspace">
+      ${state.activeRecommendation ? `
+        <section class="card recommendation-context-card">
+          <div class="row"><h2 class="section-title">Discussing recommendation</h2><button type="button" class="ask-audit-button" data-clear-recommendation>Close context</button></div>
+          <div class="sub">${escapeHtml(state.activeRecommendation.context.campaignName || state.activeRecommendation.context.title || state.activeRecommendation.context.target || "Recommendation")}</div>
+          <div class="sub">${escapeHtml(state.activeRecommendation.context.action || "")} · ${escapeHtml(state.activeRecommendation.context.recommendationPeriod || "")} · ${escapeHtml(state.activeRecommendation.context.status || "Proposed")}</div>
+          ${state.activeRecommendation.context.actualActionTaken ? `<div class="recommendation-monitoring-message">You logged: ${escapeHtml(state.activeRecommendation.context.actualActionTaken)}${state.activeRecommendation.context.effectiveChangeDate ? ` on ${escapeHtml(state.activeRecommendation.context.effectiveChangeDate)}` : ""}.</div>` : ""}
+        </section>
+      ` : ""}
+      <div class="chip-row assistant-suggestions">
+        ${suggestions.map((label) => `<button type="button" class="chip" data-ai-suggestion="${escapeHtml(label)}">${escapeHtml(label)}</button>`).join("")}
+      </div>
+      <section class="assistant-thread" aria-live="polite">
+        ${state.aiMessages.map((message, index) => renderAssistantMessage(message, index, "ai")).join("")}
+        ${state.aiLoading ? `<div class="bubble ai"><span class="typing-dots">Checking your data...</span></div>` : ""}
+        ${state.aiError ? `<div class="card"><div class="negative sub">${escapeHtml(state.aiError)}</div></div>` : ""}
+      </section>
+      <div class="prompt-bar">
+        <textarea rows="1" inputmode="text" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-ai-input aria-label="Ask the assistant" placeholder="Ask a question or give a command">${escapeHtml(state.aiDraft)}</textarea>
+        <button type="button" class="send-button" data-ai-send aria-label="Send question">&#8593;</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderChangeLogger() {
+  const campaigns = state.changeOptions?.campaigns || [];
+  const recentChanges = state.changeOptions?.recentChanges || [];
+  const changePageSize = 8;
+  const changePageCount = Math.max(1, Math.ceil(recentChanges.length / changePageSize));
+  const changePage = Math.min(state.changeHistoryPage, changePageCount - 1);
+  const changeStart = changePage * changePageSize;
+  const visibleChanges = recentChanges.slice(changeStart, changeStart + changePageSize);
+  return `
+    <div class="stack assistant-workspace">
+      <section class="card change-entry-card">
+        <div>
+          <h2 class="section-title">Log a campaign change</h2>
+          <div class="sub">Choose the exact campaign and effective date before describing the change.</div>
+        </div>
+        <label class="field-label">
+          <span>Campaign</span>
+          <select data-change-campaign aria-label="Campaign">
+            ${campaigns.map((item) => `<option value="${escapeHtml(item.name)}" ${item.name === state.logCampaign ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="field-label">
+          <span>Date change was made</span>
+          <input type="date" data-change-date aria-label="Date change was made" value="${escapeHtml(state.logDate)}">
+        </label>
+        <label class="field-label">
+          <span>What changed?</span>
+          <textarea data-change-description aria-label="What changed" rows="3" placeholder="Example: Lowered substitutes bid from .13 to .12">${escapeHtml(state.logDescription)}</textarea>
+        </label>
+        <button type="button" class="preview-change-button" data-change-preview>Preview change</button>
+        ${state.changeOptionsError ? `<div class="negative sub">${escapeHtml(state.changeOptionsError)}</div>` : ""}
+      </section>
+      <section class="assistant-thread change-thread" aria-live="polite">
+        ${state.logMessages.map((message, index) => renderAssistantMessage(message, index, "logger")).join("")}
+        ${state.logLoading ? `<div class="bubble ai"><span class="typing-dots">Preparing the receipt...</span></div>` : ""}
+        ${state.logError ? `<div class="card"><div class="negative sub">${escapeHtml(state.logError)}</div></div>` : ""}
+      </section>
+      <section class="card recent-changes-card">
+        <div class="row">
+          <h2 class="section-title">Recent changes</h2>
+          <span class="label">${recentChanges.length ? `${changeStart + 1}-${changeStart + visibleChanges.length} of ` : ""}${recentChanges.length}</span>
+        </div>
+        ${recentChanges.length ? visibleChanges.map((item) => {
+          const id = String(item.id || `${item.loggedAt}-${item.campaignName}`);
+          const context = [item.campaignName, item.targetName].filter(Boolean).join(" · ");
+          const title = item.summary || item.details || item.changeType || "Campaign change";
+          const expanded = state.expandedChangeId === id;
+          const editing = state.editingChangeId === id;
+          const campaignNames = [...new Set([item.campaignName, ...campaigns.map((campaign) => campaign.name)].filter(Boolean))];
+          return `
+            <div class="recent-change-entry">
+              <div class="recent-change-row" role="button" tabindex="0" data-change-details-toggle="${escapeHtml(id)}" aria-expanded="${expanded}">
+                <div class="recent-change-heading">
+                  <strong>${escapeHtml(title)}</strong>
+                  <button type="button" class="recent-change-edit-button recent-change-edit-inline" data-change-edit="${escapeHtml(id)}" title="Correct this log entry">Edit</button>
+                  <span class="recent-change-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span>
+                </div>
+                ${context ? `<span class="recent-change-context">${escapeHtml(context)}</span>` : ""}
+                <span>${escapeHtml(item.loggedAt || item.effectiveAt || "")}</span>
+              </div>
+              <div class="recent-change-details" data-change-details="${escapeHtml(id)}" ${expanded ? "" : "hidden"}>
+                <div class="recent-change-actions recent-change-actions-top">
+                  <button type="button" class="recent-change-edit-button" data-change-edit="${escapeHtml(id)}" aria-expanded="${editing}" title="Correct this log entry">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+                    <span>Edit this change</span>
+                  </button>
+                </div>
+                ${item.details && item.details !== title ? `<div><b>What changed</b><span>${escapeHtml(item.details)}</span></div>` : ""}
+                ${item.changeType ? `<div><b>Change type</b><span>${escapeHtml(item.changeType)}</span></div>` : ""}
+                ${item.campaignName ? `<div><b>Campaign</b><span>${escapeHtml(item.campaignName)}${item.campaignId ? ` (${escapeHtml(item.campaignId)})` : ""}</span></div>` : ""}
+                ${item.targetName ? `<div><b>Term / target</b><span>${escapeHtml(item.targetName)}${item.targetId ? ` (${escapeHtml(item.targetId)})` : ""}</span></div>` : ""}
+                ${item.adGroupId ? `<div><b>Ad group ID</b><span>${escapeHtml(item.adGroupId)}</span></div>` : ""}
+                ${(item.previousValue || item.newValue) ? `<div><b>Value</b><span>${escapeHtml(item.previousValue || "—")} → ${escapeHtml(item.newValue || "—")}</span></div>` : ""}
+                ${item.effectiveDate ? `<div><b>Effective date</b><span>${escapeHtml(item.effectiveDate)}</span></div>` : ""}
+                ${item.recommendationId ? `<div><b>Related recommendation</b><span>${escapeHtml(item.recommendationId)}</span></div>` : ""}
+                ${editing ? `
+                  <form class="change-edit-form" data-change-edit-form="${escapeHtml(id)}">
+                    <label class="field-label"><span>Correct campaign</span>
+                      <select data-change-edit-campaign aria-label="Correct campaign">
+                        ${campaignNames.map((name) => `<option value="${escapeHtml(name)}" ${name === item.campaignName ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+                      </select>
+                    </label>
+                    <label class="field-label"><span>Date change was made</span><input type="date" data-change-edit-date value="${escapeHtml(item.effectiveDate || "")}"></label>
+                    <label class="field-label"><span>What changed</span><textarea rows="3" data-change-edit-details>${escapeHtml(item.details || "")}</textarea></label>
+                    <div class="change-edit-actions">
+                      <button type="button" class="change-edit-cancel" data-change-edit-cancel>Cancel</button>
+                      <button type="submit" class="change-edit-save">Save correction</button>
+                    </div>
+                  </form>
+                ` : ""}
+              </div>
+            </div>
+          `;
+        }).join("") : `<div class="sub">No campaign changes have been logged yet.</div>`}
+        ${recentChanges.length > changePageSize ? `
+          <div class="change-history-pagination" aria-label="Change history pages">
+            <button type="button" data-change-page="${changePage - 1}" ${changePage === 0 ? "disabled" : ""}>Previous</button>
+            <span>Page ${changePage + 1} of ${changePageCount}</span>
+            <button type="button" data-change-page="${changePage + 1}" ${changePage >= changePageCount - 1 ? "disabled" : ""}>Next</button>
+          </div>
+        ` : ""}
+      </section>
+    </div>
+  `;
+}
+
+function auditActionClass(action) {
+  if (action === "Lower bid") return "lower";
+  if (action === "Test small increase") return "increase";
+  return "hold";
+}
+
+function reconciliationLabel(item) {
+  const labels = {
+    confirmed_across_periods: "14 + 30 days agree",
+    short_term_deterioration_long_term_strength: "Recent weakness · long-term strength",
+    insufficient_recent_data: "30-day evidence · recent data sparse",
+    recent_evidence_supersedes_conflicting_older_recommendation: "Recent evidence supersedes older direction",
+    short_term_improvement_supersedes_older_recommendation: "Superseded by recent improvement",
+  };
+  return labels[item.reconciliationResult] || "";
+}
+
+function auditPeriodLabel(period) {
+  if (period === "last7") return "7-day";
+  if (period === "last14") return "14-day";
+  if (period === "last30") return "30-day";
+  return period || "latest";
+}
+
+function recommendationContext(type, item) {
+  const id = recommendationId(type, item);
+  const interaction = state.recommendationInteractions[id] || {};
+  const reportPeriod = item.recommendationPeriod === "14-day" || type.endsWith("_14")
+    ? "last14"
+    : item.recommendationPeriod === "30-day" || type.endsWith("_30")
+      ? "last30"
+      : state.aiPeriod || "last30";
+  return {
+    recommendationId: id,
+    recommendationType: type,
+    recommendationPeriod: item.recommendationPeriod || (type.endsWith("_14") ? "14-day" : type.endsWith("_30") ? "30-day" : ""),
+    reportPeriod,
+    campaignName: item.campaignName || "",
+    campaignId: item.campaignId || "",
+    adGroupName: item.adGroupName || "",
+    adGroupId: item.adGroupId || "",
+    target: item.target || item.searchTerm || item.title || "",
+    targetId: item.targetId || "",
+    country: item.country || "",
+    action: item.action || item.pattern || "",
+    confidence: item.confidence || item.priority || "",
+    supportingMetrics: {
+      clicks: item.clicks ?? null,
+      spend: item.spend ?? null,
+      orders: item.orders ?? null,
+      roas: item.roas ?? null,
+      changePercent: item.changePercent ?? null,
+    },
+    currentBid: item.currentBid ?? null,
+    suggestedBid: item.suggestedBid ?? null,
+    spend: item.spend ?? null,
+    orders: item.orders ?? null,
+    roas: item.roas ?? null,
+    reason: item.reason || item.nextStep || "",
+    reportDate: item.reportDate || "",
+    periodEvidence: item.periodEvidence || {},
+    reconciliationResult: item.reconciliationResult || "",
+    status: interaction.status || item.status || "Proposed",
+    supersededByRecommendationId: item.supersededByRecommendationId || interaction.supersededByRecommendationId || "",
+    supersedesRecommendationId: item.supersedesRecommendationId || interaction.supersedesRecommendationId || "",
+    actualActionTaken: item.actualActionTaken || interaction.actualActionTaken || interaction.userAction || "",
+    actualPreviousValue: item.actualPreviousValue || interaction.previousValue || "",
+    actualNewValue: item.actualNewValue || interaction.actualNewValue || "",
+    effectiveChangeDate: item.effectiveChangeDate || interaction.effectiveChangeDate || interaction.effectiveAt || "",
+    monitoringUntil: item.monitoringUntil || interaction.monitoringUntil || "",
+    minimumPostChangeClicks: item.minimumPostChangeClicks || interaction.minimumPostChangeClicks || 20,
+    postChangeMetrics: item.postChangeMetrics || interaction.postChangeMetrics || {},
+    notes: item.changeNote || interaction.userNotes || interaction.reason || "",
+  };
+}
+
+function recommendationId(type, item) {
+  if (item.recommendationId) return item.recommendationId;
+  return [
+    type,
+    item.campaignName || "",
+    item.target || item.searchTerm || item.title || "",
+    item.action || item.pattern || "",
+    item.currentBid ?? "",
+    item.suggestedBid ?? "",
+    item.reportDate || item.periodEnd || "",
+  ].join("|");
+}
+
+function recommendationStatus(type, item) {
+  return state.recommendationInteractions[recommendationId(type, item)]?.status || item.status || "Proposed";
+}
+
+function recommendationMatchesFilter(type, item) {
+  const status = recommendationStatus(type, item);
+  if (status === "Proposed" || status === "Needs action") return true;
+  if (status !== "Deferred") return false;
+  const reminderAt = state.recommendationInteractions[recommendationId(type, item)]?.reminderAt;
+  return !reminderAt || new Date(reminderAt) <= new Date();
+}
+
+function changeDateTimeValue() {
+  const value = new Date();
+  const offset = value.getTimezoneOffset() * 60000;
+  return new Date(value.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function renderRecommendationActions(type, item) {
+  const id = recommendationId(type, item);
+  const interaction = state.recommendationInteractions[id];
+  const status = interaction?.status || item.status || "Proposed";
+  return `
+    <div class="recommendation-interaction" data-recommendation-id="${escapeHtml(id)}">
+      <button type="button" class="recommendation-action-toggle" data-recommendation-open aria-haspopup="dialog">
+        <span>Recommendation actions</span><strong>${escapeHtml(status)}</strong>
+      </button>
+      <dialog class="recommendation-dialog" data-recommendation-dialog>
+        <div class="recommendation-dialog-head"><strong>Recommendation actions</strong><button type="button" class="recommendation-dialog-close" data-recommendation-dialog-close aria-label="Close actions">×</button></div>
+        <div class="recommendation-action-body">
+        <div class="recommendation-status"><span>Status</span><strong>${escapeHtml(status)}</strong>${interaction?.reminderAt ? `<small>Reminder: ${escapeHtml(interaction.reminderAt)}</small>` : ""}</div>
+        <div class="recommendation-actions">
+        <button type="button" class="ask-audit-button" data-recommendation-action="log_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Log a Change</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="keep_monitoring" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Keep Monitoring</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="remind_later" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Remind Me Later</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="dismiss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Dismiss</button>
+        <button type="button" class="ask-audit-button" data-recommendation-action="discuss" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Discuss with AI</button>
+        </div>
+        <form class="recommendation-change-form" data-recommendation-change-form hidden>
+          <label>What did you change?<select data-change-what><option>Made the recommended change</option><option>Made a different bid change</option><option>Paused the target or campaign</option><option>Changed budget</option><option>Changed placement adjustment</option><option>Added a negative target or keyword</option><option>Made another change</option><option>No actual settings change, but I reviewed it</option></select></label>
+          <label>Previous value<input data-previous-value value="${escapeHtml(item.currentBid == null ? "" : formatMoney(item.currentBid))}" /></label>
+          <label>New value<input data-new-value value="${escapeHtml(item.suggestedBid == null ? "" : formatMoney(item.suggestedBid))}" /></label>
+          <label>Date and time changed<input type="datetime-local" data-effective-at value="${changeDateTimeValue()}" /></label>
+          <label>Optional note<textarea data-change-note rows="3" placeholder="Describe the actual change or why you reviewed it."></textarea></label>
+          <button type="button" class="ask-audit-button" data-recommendation-action="save_change" data-recommendation-type="${escapeHtml(type)}" data-recommendation-id="${escapeHtml(id)}">Save action</button>
+        </form>
+        ${interaction?.reason ? `<div class="sub">Reason: ${escapeHtml(interaction.reason)}</div>` : ""}
+        ${(item.actualActionTaken || item.changeNote) ? `<div class="recommendation-logged-detail"><strong>Logged change</strong><span>${escapeHtml(item.actualActionTaken || "Change recorded")}${item.actualPreviousValue || item.actualNewValue ? `: ${escapeHtml(item.actualPreviousValue || "—")} → ${escapeHtml(item.actualNewValue || "—")}` : ""}</span>${item.changeNote ? `<small>${escapeHtml(item.changeNote)}</small>` : ""}</div>` : ""}
+        </div>
+      </dialog>
+    </div>
+  `;
+}
+
+function findRecommendation(type, id) {
+  const audit = state.dailyAudit || {};
+  const candidates = [
+    ...(audit.activeBidRecommendations || []),
+    ...(audit.bidRecommendations || []),
+    ...(audit.bidRecommendations14Day || []),
+    ...(audit.searchTermRecommendations || []),
+    ...(audit.searchTermFindings || []),
+    ...(audit.searchTermFindings14Day || []),
+    ...(audit.salesPatternOpportunities || []),
+  ];
+  return candidates.find((item) => item.recommendationId === id || recommendationId(type, item) === id);
+}
+
+function reminderDate(choice) {
+  const days = { "Tomorrow": 1, "3 Days": 3, "1 Week": 7 }[choice];
+  if (!days) return "";
+  const value = new Date();
+  value.setDate(value.getDate() + days);
+  return value.toLocaleDateString("en-CA");
+}
+
+async function handleRecommendationAction(button) {
+  const type = button.dataset.recommendationType;
+  const id = button.dataset.recommendationId;
+  let action = button.dataset.recommendationAction;
+  if (action === "log_change") {
+    const dialog = button.closest(".recommendation-dialog");
+    const form = dialog?.querySelector("[data-recommendation-change-form]");
+    if (form) {
+      form.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      requestAnimationFrame(() => {
+        dialog.scrollTo({ top: Math.max(0, form.offsetTop - 12), behavior: "auto" });
+      });
+    }
+    return;
+  }
+  const item = findRecommendation(type, id);
+  if (!item) {
+    window.alert("This recommendation could not be matched to the current audit. Refresh the audit and try again.");
+    return;
+  }
+  const context = recommendationContext(type, item);
+  if (action === "discuss") {
+    button.closest(".recommendation-dialog")?.close();
+    state.activeRecommendation = { recommendationId: id, context };
+    state.aiMode = "ask";
+    navigateToPage("ai");
+    requestAnimationFrame(() => document.querySelector("[data-ai-input]")?.focus());
+    return;
+  }
+  let reason = "";
+  let reminderAt = "";
+  let status = "Proposed";
+  let changeWhat = "";
+  let previousValue = "";
+  let newValue = "";
+  let effectiveAt = "";
+  let changeCategory = "";
+  if (action === "save_change") {
+    const dialog = button.closest(".recommendation-dialog");
+    changeWhat = dialog?.querySelector("[data-change-what]")?.value || "";
+    previousValue = dialog?.querySelector("[data-previous-value]")?.value || "";
+    newValue = dialog?.querySelector("[data-new-value]")?.value || "";
+    effectiveAt = dialog?.querySelector("[data-effective-at]")?.value || "";
+    reason = dialog?.querySelector("[data-change-note]")?.value || "";
+    changeCategory = changeWhat.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    status = "Action logged";
+    if (!window.confirm("Save this actual change in Merch Agent? Amazon Ads settings will not be changed.")) return;
+    action = "log_change";
+  } else if (action === "keep_monitoring") {
+    reason = window.prompt("Optional note or future review condition:", "") || "";
+    status = "Monitoring";
+    if (!window.confirm("Keep this recommendation in monitoring?")) return;
+  } else if (action === "dismiss") {
+    reason = window.prompt("Why are you dismissing this recommendation?") || "";
+    if (!reason.trim()) return;
+    status = "Dismissed";
+  } else if (action === "remind_later") {
+    const choice = window.prompt("Remind me when? Enter Tomorrow, 3 Days, or 1 Week.", "Tomorrow") || "";
+    reminderAt = reminderDate(choice.trim());
+    if (!reminderAt) return;
+    status = "Deferred";
+  }
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/recommendation-interaction", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recommendationId: id, recommendationType: type, action, status, reason, reminderAt, context, campaign: context.campaignName, confidence: context.confidence, supportingMetrics: context.supportingMetrics, confirmed: true, idempotencyKey: (crypto.randomUUID ? crypto.randomUUID() : `${id}-${Date.now()}`), changeWhat, actualActionTaken: changeWhat, previousValue, newValue, effectiveAt, changeCategory }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "The recommendation action could not be saved.");
+    state.recommendationInteractions[id] = { ...result, context, status, lastAction: action, reason, reminderAt };
+    state.recommendationNotice = `${status} saved.`;
+    button.closest(".recommendation-dialog")?.close();
+    state.recommendationDialogOpen = false;
+    state.recommendationDeferredRender = false;
+    render({ preserveScroll: true });
+  } catch (error) {
+    button.disabled = false;
+    window.alert(error.message || "The recommendation action could not be saved.");
+  }
+}
+
+function renderDailyAuditLegacy() {
+  if (state.dailyAuditLoading && !state.dailyAudit) {
+    return `<section class="card"><div class="sub">Loading the latest daily audit...</div></section>`;
+  }
+  if (state.dailyAuditError) {
+    return `<section class="card"><div class="negative sub">${escapeHtml(state.dailyAuditError)}</div></section>`;
+  }
+
+  const audit = state.dailyAudit || {};
+  const recommendations = audit.bidRecommendations || [];
+  const fourteenDayRecommendations = audit.bidRecommendations14Day || [];
+  const allChanges = recommendations.filter((item) => item.action !== "Hold");
+  const allFourteenDayChanges = fourteenDayRecommendations.filter((item) => item.action !== "Hold");
+  const changes = allChanges.filter((item) => recommendationMatchesFilter("bid_30", item));
+  const filteredFourteenDayRecommendations = allFourteenDayChanges.filter((item) => recommendationMatchesFilter("bid_14", item));
+  const holds = recommendations.filter((item) => item.action === "Hold");
+  const searchTerms = audit.searchTermFindings || [];
+  const fourteenDaySearchTerms = audit.searchTermFindings14Day || [];
+  const salesOpportunities = audit.salesPatternOpportunities || [];
+  const bidHistory = audit.inferredBidChanges || [];
+  const actedEntries = [...allChanges.map((item) => ({ type: "bid_30", item })), ...allFourteenDayChanges.map((item) => ({ type: "bid_14", item }))]
+    .filter(({ type, item }) => ["Action logged", "Completed", "Monitoring", "Dismissed", "Ignored", "Superseded"].includes(recommendationStatus(type, item)))
+    .sort((a, b) => String(state.recommendationInteractions[recommendationId(b.type, b.item)]?.loggedAt || "").localeCompare(String(state.recommendationInteractions[recommendationId(a.type, a.item)]?.loggedAt || "")))
+    .slice(0, 10);
+
+  return `
+    <div class="stack audit-workspace">
+      <section class="card audit-summary">
+        <div class="row">
+          <div>
+            <h2 class="section-title">Daily campaign audit</h2>
+            <div class="sub">Target: ${Number(audit.targetRoas || 5).toFixed(2)} ROAS / ${Number(audit.targetAcos || 20).toFixed(0)}% ACOS</div>
+          </div>
+          <span class="status-pill performing">Read only</span>
+        </div>
+        <div class="recommendation-filters" role="group" aria-label="Recommendation filters">
+          ${[["needs_action", "Needs action"], ["monitoring", "Monitoring"], ["made_change", "Made change"], ["deferred", "Deferred"], ["ignored", "Ignored"], ["superseded", "Superseded"], ["all", "All"]].map(([value, label]) => `<button type="button" class="filter-button ${state.recommendationFilter === value ? "active" : ""}" data-recommendation-filter="${value}">${label}</button>`).join("")}
+        </div>
+        <div class="audit-counts">
+          <div><strong>${changes.length}</strong><span>Bid actions</span></div>
+          <div><strong>${holds.length}</strong><span>Hold steady</span></div>
+          <div><strong>${searchTerms.length}</strong><span>Search terms</span></div>
+        </div>
+        <div class="audit-source sub">Targets: ${escapeHtml(audit.targetSnapshot || "not loaded")} · 14-day targets: ${escapeHtml(audit.targetSnapshot14Day || "pending first import")} · Search terms: ${escapeHtml(audit.searchTermSnapshot || "pending first import")}${audit.searchTermPeriod ? ` (${escapeHtml(auditPeriodLabel(audit.searchTermPeriod))})` : ""}</div>
+        <div class="audit-source sub">Merch sales through: ${escapeHtml(audit.salesDataThrough || "not loaded")} Â· Dataset status: ${audit.datasetsCurrent ? "current" : "delayed or stale"}</div>
+        ${audit.salesDataStale ? `<div class="audit-stale-warning">Sales data is delayed through ${escapeHtml(audit.salesDataThrough || "an unknown date")}. Recommendations are provisional until a newer Merch report is imported.</div>` : ""}
+        ${audit.targetDataStale ? `<div class="audit-stale-warning">Target data is ${audit.targetReportDate ? `only current through ${escapeHtml(audit.targetReportDate)}` : "missing a report date"}. Refresh before acting on these bid suggestions.</div>` : ""}
+      </section>
+
+      <section class="card audit-section bid-14-day">
+        <div class="row">
+          <div>
+            <h2 class="section-title">14-day bid actions</h2>
+            <div class="sub">Recent evidence is shown first and reconciled against the 30-day result.</div>
+          </div>
+          <span class="label">${filteredFourteenDayRecommendations.length}</span>
+        </div>
+        ${filteredFourteenDayRecommendations.length ? filteredFourteenDayRecommendations.slice(0, 20).map((item) => `
+          <article class="audit-action ${auditActionClass(item.action)}">
+            <div class="audit-action-head">
+              <span class="audit-action-label">${escapeHtml(item.action)}</span>
+              <span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)} confidence</span>
+            </div>
+            ${reconciliationLabel(item) ? `<div class="reconciliation-label">${escapeHtml(reconciliationLabel(item))}</div>` : ""}
+            <strong>${escapeHtml(item.campaignName)}</strong>
+            <div class="audit-target">${escapeHtml(item.target)}${item.matchType ? ` · ${escapeHtml(item.matchType)}` : ""}</div>
+            <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong><em>${Number(item.changePercent || 0) > 0 ? "+" : ""}${Number(item.changePercent || 0).toFixed(1)}%</em></div>
+            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            ${item.monitoringMessage ? `<div class="recommendation-monitoring-message">${escapeHtml(item.monitoringMessage)}</div>` : ""}
+            <p>${escapeHtml(item.reason)}</p>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("bid_14", item)}
+          </article>
+        `).join("") : `<div class="audit-empty">No reconciled 14-day bid changes meet the evidence thresholds.</div>`}
+        ${filteredFourteenDayRecommendations.length > 20 ? `<div class="sub">Showing the 20 highest-priority 14-day actions of ${filteredFourteenDayRecommendations.length}.</div>` : ""}
+      </section>
+
+      <section class="card audit-section bid-30-day">
+        <div class="row">
+          <div>
+            <h2 class="section-title">30-day bid actions</h2>
+            <div class="sub">Longer-term recommendations remain active when recent data is too sparse to override them.</div>
+          </div>
+          <span class="label">${changes.length}</span>
+        </div>
+        ${changes.length ? changes.slice(0, 20).map((item) => `
+          <article class="audit-action ${auditActionClass(item.action)}">
+            <div class="audit-action-head">
+              <span class="audit-action-label">${escapeHtml(item.action)}</span>
+              <span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)} confidence</span>
+            </div>
+            ${reconciliationLabel(item) ? `<div class="reconciliation-label">${escapeHtml(reconciliationLabel(item))}</div>` : ""}
+            <strong>${escapeHtml(item.campaignName)}</strong>
+            <div class="audit-target">${escapeHtml(item.target)}${item.matchType ? ` · ${escapeHtml(item.matchType)}` : ""}</div>
+            <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong><em>${Number(item.changePercent || 0) > 0 ? "+" : ""}${Number(item.changePercent || 0).toFixed(1)}%</em></div>
+            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            ${item.monitoringMessage ? `<div class="recommendation-monitoring-message">${escapeHtml(item.monitoringMessage)}</div>` : ""}
+            <p>${escapeHtml(item.reason)}</p>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 30-day bid recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("bid_30", item)}
+          </article>
+        `).join("") : `<div class="audit-empty">No separate 30-day bid changes remain after reconciliation.</div>`}
+        ${changes.length > 20 ? `<div class="sub">Showing the 20 highest-priority 30-day actions of ${changes.length}.</div>` : ""}
+      </section>
+
+      ${state.recommendationFilter === "needs_action" && actedEntries.length ? `
+      <section class="card audit-section recently-acted">
+        <div class="row">
+          <div>
+            <h2 class="section-title">Recently acted on</h2>
+            <div class="sub">Your logged decisions remain here for review. They are hidden from unresolved actions by default.</div>
+          </div>
+          <span class="label">${actedEntries.length}</span>
+        </div>
+        ${actedEntries.map(({ type, item }) => {
+          const interaction = state.recommendationInteractions[recommendationId(type, item)] || {};
+          return `<article class="detected-change"><strong>${escapeHtml(item.campaignName)} · ${escapeHtml(item.target)}</strong><span>${escapeHtml(interaction.status || "Action logged")} · ${escapeHtml(interaction.actualActionTaken || interaction.reason || "Decision recorded")}${interaction.loggedAt ? ` · ${escapeHtml(interaction.loggedAt)}` : ""}</span></article>`;
+        }).join("")}
+      </section>` : ""}
+
+      <section class="card audit-section search-30-day">
+        <div class="row">
+          <h2 class="section-title">Search-term findings</h2>
+          <span class="label">${searchTerms.length}</span>
+        </div>
+        ${searchTerms.length ? searchTerms.slice(0, 15).map((item) => `
+          <article class="search-finding">
+            <div class="audit-action-head"><strong>${escapeHtml(item.searchTerm)}</strong><span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)}</span></div>
+            <div class="sub">${escapeHtml(item.campaignName)}</div>
+            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            <div class="search-action">${escapeHtml(item.action)}</div>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("search_30", item)}
+          </article>
+        `).join("") : `<div class="audit-empty">Waiting for the first Amazon search-term report to complete. The checkpointed report will resume during the next refresh.</div>`}
+      </section>
+
+      <section class="card audit-section search-14-day">
+        <div class="row">
+          <div>
+            <h2 class="section-title">14-day search-term findings</h2>
+            <div class="sub">Recent customer-search behavior, useful after campaign changes.</div>
+          </div>
+          <span class="label">${fourteenDaySearchTerms.length}</span>
+        </div>
+        ${fourteenDaySearchTerms.length ? fourteenDaySearchTerms.slice(0, 15).map((item) => `
+          <article class="search-finding">
+            <div class="audit-action-head"><strong>${escapeHtml(item.searchTerm)}</strong><span class="confidence ${escapeHtml(item.confidence)}">${escapeHtml(item.confidence)}</span></div>
+            <div class="sub">${escapeHtml(item.campaignName)}</div>
+            <div class="audit-metrics">${item.clicks} clicks · ${formatMoney(item.spend)} spend · ${item.orders} orders · ${Number(item.roas || 0).toFixed(2)} ROAS</div>
+            <div class="search-action">${escapeHtml(item.action)}</div>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the 14-day search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("search_14", item)}
+          </article>
+        `).join("") : `<div class="audit-empty">This will fill after the next ad refresh imports 14-day search-term data.</div>`}
+      </section>
+
+      <section class="card audit-section">
+        <div class="row">
+          <h2 class="section-title">Automatically detected bid history</h2>
+          <span class="label">${bidHistory.length}</span>
+        </div>
+        ${bidHistory.length ? bidHistory.slice(0, 12).map((item) => `
+          <div class="detected-change">
+            <strong>${escapeHtml(item.campaignName)} · ${escapeHtml(item.target)}</strong>
+            <span>${formatMoney(item.previousBid)} → ${formatMoney(item.newBid)} (${Number(item.changePercent || 0) > 0 ? "+" : ""}${Number(item.changePercent || 0).toFixed(1)}%)</span>
+          </div>
+        `).join("") : `<div class="audit-empty">No bid differences have been detected between comparable target snapshots yet.</div>`}
+      </section>
+
+      <section class="card audit-section">
+        <div class="row">
+          <div>
+            <h2 class="section-title">Sales-pattern opportunities</h2>
+            <div class="sub">Through ${escapeHtml(audit.salesDataThrough || "not loaded")}</div>
+          </div>
+          <span class="label">${salesOpportunities.length}</span>
+        </div>
+        ${salesOpportunities.length ? salesOpportunities.slice(0, 15).map((item) => `
+          <article class="sales-opportunity">
+            <div class="audit-action-head"><strong>${escapeHtml(item.title)}</strong><span class="confidence ${escapeHtml(item.priority)}">${escapeHtml(item.priority)}</span></div>
+            <div class="search-action">${escapeHtml(item.pattern)}</div>
+            <div class="audit-metrics">${item.recentUnits} units in the latest 7 days · ${item.previousUnits} in the prior 7 · ${formatMoney(item.recentRoyalties)} reported royalties</div>
+            <p>${escapeHtml(item.nextStep)}</p>
+            <div class="sub">${item.hasObviousCampaign ? "An existing campaign appears to match this title." : "No obvious campaign-name match was found; confirm manually before creating one."}</div>
+            <button type="button" class="ask-audit-button" data-audit-question="${escapeHtml(`Explain the sales opportunity for ${item.title}`)}">Ask AI about this</button>
+            ${renderRecommendationActions("sales_opportunity", item)}
+          </article>
+        `).join("") : `<div class="audit-empty">No new or accelerating sales pattern currently meets the review threshold.</div>`}
+      </section>
+
+      <section class="card soft-card"><div class="sub">${escapeHtml(audit.caveat || "Recommendations are read-only and require review before changes are made in Amazon Ads.")}</div></section>
+    </div>
+  `;
+}
+
+function priorityClass(value) {
+  return String(value || "Low").toLowerCase();
+}
+
+function compactEvidence(label, evidence, role = "context") {
+  const value = evidence || {};
+  return `
+    <div class="period-evidence ${escapeHtml(role)}">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${Number(value.roas || 0).toFixed(2)} ROAS</span>
+      <span>${Number(value.clicks || 0)} clicks</span>
+      <span>${formatMoney(value.spend || 0)} spend</span>
+      <span>${Number(value.orders || 0)} orders</span>
+    </div>
+  `;
+}
+
+function activeRecommendation(type, item) {
+  return item.actionable !== false && recommendationMatchesFilter(type, item);
+}
+
+function renderBidRecommendationCard(item) {
+  const type = item.recommendationType === "bid_30" || item.recommendationPeriod === "30-day" ? "bid_30" : "bid_14";
+  const id = recommendationId(type, item);
+  const expanded = state.expandedRecommendationId === id;
+  const evidence = item.periodEvidence || {};
+  const reason = item.conciseReason || item.reason || "Review the evidence before making a change.";
+  const primary = item.primaryDecision || item.controllingPeriod || item.recommendationPeriod || "14-day";
+  const evidenceCards = primary === "Post-change"
+    ? [
+        compactEvidence("Post-change - primary", evidence["post-change"], "primary"),
+        compactEvidence("14-day context", evidence["14-day"]),
+        compactEvidence("30-day context", evidence["30-day"]),
+      ].join("")
+    : [
+        compactEvidence(primary === "14-day" ? "14-day - primary" : "14-day context", evidence["14-day"], primary === "14-day" ? "primary" : "context"),
+        compactEvidence(primary === "30-day" ? "30-day - primary" : "30-day context", evidence["30-day"], primary === "30-day" ? "primary" : "context"),
+      ].join("");
+  return `
+    <article class="recommendation-card ${auditActionClass(item.action)}" data-recommendation-card="${escapeHtml(id)}">
+      <div class="recommendation-card-head">
+        <span class="priority-badge ${priorityClass(item.priorityLevel)}">${escapeHtml(item.priorityLevel || "Low")}</span>
+        <span class="confidence ${escapeHtml(item.confidence || "medium")}">${escapeHtml(item.confidence || "medium")} confidence</span>
+      </div>
+      <div class="decision-source"><span>Primary decision</span><strong>${escapeHtml(primary)}</strong></div>
+      <strong class="recommendation-title"><span>Decision</span>${escapeHtml(item.action)}</strong>
+      <div class="recommendation-subject"><b>${escapeHtml(item.campaignName || "Campaign")}</b><span>${escapeHtml(item.target || item.placement || "Target")}</span></div>
+      <div class="bid-change"><span>${formatMoney(item.currentBid)}</span><b>→</b><strong>${formatMoney(item.suggestedBid)}</strong></div>
+      <span class="reconciliation-label">${escapeHtml(item.reconciliationLabel || reconciliationLabel(item) || "Period evidence reviewed")}</span>
+      <p class="recommendation-reason"><b>Reason:</b> ${escapeHtml(reason)}</p>
+      <div class="period-comparison">${evidenceCards}</div>
+      <div class="recommendation-primary-actions">
+        <button type="button" class="compact-action" data-audit-question="${escapeHtml(`Explain this recommendation for ${item.campaignName} target ${item.target}`)}">Ask AI</button>
+        <button type="button" class="compact-action" data-recommendation-open aria-haspopup="dialog">Actions</button>
+        <button type="button" class="compact-action" data-recommendation-details="${escapeHtml(id)}" aria-expanded="${expanded}" aria-controls="details-${escapeHtml(id)}">${expanded ? "Hide details" : "Details"}</button>
+      </div>
+      <div id="details-${escapeHtml(id)}" class="recommendation-details" ${expanded ? "" : "hidden"}>
+        <dl>
+          <div><dt>Marketplace</dt><dd>${escapeHtml(item.country || "Not specified")}</dd></div>
+          <div><dt>Ad group</dt><dd>${escapeHtml(item.adGroupName || "Not specified")}</dd></div>
+          <div><dt>Report date</dt><dd>${escapeHtml(item.reportDate || item.dataEndDate || "Not available")}</dd></div>
+          <div><dt>Recommendation ID</dt><dd>${escapeHtml(id)}</dd></div>
+        </dl>
+        <p><strong>Placement context:</strong> ${escapeHtml(item.placementContext?.summary || "No matching placement evidence is available.")}</p>
+        ${item.placementContext?.reportDate ? `<p class="sub">Placement report through ${escapeHtml(item.placementContext.reportDate)}</p>` : ""}
+        ${item.overrideReason ? `<p><strong>Why 30-day overrides:</strong> ${escapeHtml(item.overrideReason)}</p>` : ""}
+        ${item.monitoringMessage ? `<p>${escapeHtml(item.monitoringMessage)}</p>` : ""}
+      </div>
+      ${renderRecommendationActions(type, item)}
+    </article>
+  `;
+}
+
+function renderSearchRecommendationCard(item) {
+  const type = item.recommendationPeriod === "14-day" ? "search_14" : "search_30";
+  const id = recommendationId(type, item);
+  const expanded = state.expandedRecommendationId === id;
+  return `
+    <article class="recommendation-card search" data-recommendation-card="${escapeHtml(id)}">
+      <div class="recommendation-card-head">
+        <span class="priority-badge ${priorityClass(item.priorityLevel)}">${escapeHtml(item.priorityLevel || "Low")}</span>
+        <span class="confidence ${escapeHtml(item.confidence || "medium")}">${escapeHtml(item.confidence || "medium")} confidence</span>
+      </div>
+      <strong class="recommendation-title">${escapeHtml(item.action)}</strong>
+      <div class="recommendation-subject"><b>“${escapeHtml(item.searchTerm)}”</b><span>${escapeHtml(item.campaignName || "Campaign")}${item.adGroupName ? ` · ${escapeHtml(item.adGroupName)}` : ""}</span></div>
+      <div class="search-metric-row"><span>${item.clicks || 0} clicks</span><span>${formatMoney(item.spend || 0)} spend</span><span>${item.orders || 0} orders</span><span>${formatMoney(item.sales || 0)} sales</span><span>${Number(item.roas || 0).toFixed(2)} ROAS</span></div>
+      <p class="recommendation-reason">${escapeHtml(item.conciseReason || item.reason || `${item.action} based on the selected reporting period.`)}</p>
+      <div class="recommendation-primary-actions">
+        <button type="button" class="compact-action" data-audit-question="${escapeHtml(`Explain search term ${item.searchTerm} in ${item.campaignName}`)}">Ask AI</button>
+        <button type="button" class="compact-action" data-recommendation-open aria-haspopup="dialog">Actions</button>
+        <button type="button" class="compact-action" data-recommendation-details="${escapeHtml(id)}" aria-expanded="${expanded}" aria-controls="details-${escapeHtml(id)}">${expanded ? "Hide details" : "Details"}</button>
+      </div>
+      <div id="details-${escapeHtml(id)}" class="recommendation-details" ${expanded ? "" : "hidden"}>
+        <dl>
+          <div><dt>Marketplace</dt><dd>${escapeHtml(item.country || "Not specified")}</dd></div>
+          <div><dt>Date range</dt><dd>${escapeHtml(item.dateRange || item.recommendationPeriod || "Latest report")}</dd></div>
+          <div><dt>Source target</dt><dd>${escapeHtml(item.sourceTarget || "Not specified")}</dd></div>
+          <div><dt>Report date</dt><dd>${escapeHtml(item.reportDate || "Not available")}</dd></div>
+        </dl>
+      </div>
+      ${renderRecommendationActions(type, item)}
+    </article>
+  `;
+}
+
+function renderRecommendationHistory(audit) {
+  const current = [
+    ...(audit.activeBidRecommendations || audit.bidRecommendations || []).map((item) => ({ type: item.recommendationPeriod === "30-day" ? "bid_30" : "bid_14", item })),
+    ...(audit.searchTermRecommendations || audit.searchTermFindings || []).map((item) => ({ type: item.recommendationPeriod === "14-day" ? "search_14" : "search_30", item })),
+    ...(audit.supersededRecommendations || []).map((item) => ({ type: "bid_30", item })),
+  ];
+  const byId = new Map(current.map((entry) => [recommendationId(entry.type, entry.item), entry]));
+  const rows = Object.entries(state.recommendationInteractions)
+    .filter(([, interaction]) => !["Proposed", "Needs action"].includes(interaction.status))
+    .map(([id, interaction]) => {
+      const entry = byId.get(id);
+      const context = interaction.context || entry?.item || {};
+      return { id, interaction, context };
+    });
+  return rows.length ? rows.map(({ id, interaction, context }) => `
+    <article class="history-row">
+      <div><strong>${escapeHtml(context.campaignName || "Recommendation")}</strong><span>${escapeHtml(context.target || context.searchTerm || "")}</span></div>
+      <span class="status-pill">${escapeHtml(interaction.status || "Recorded")}</span>
+      <small>${escapeHtml(interaction.actualActionTaken || interaction.reason || interaction.userNotes || "")}</small>
+    </article>
+  `).join("") : `<div class="audit-empty">No recommendation history has been recorded yet.</div>`;
+}
+
+function renderDailyAudit() {
+  if (state.dailyAuditLoading && !state.dailyAudit) return `<section class="card"><div class="sub">Loading the latest daily audit...</div></section>`;
+  if (state.dailyAuditError) return `<section class="card"><div class="negative sub">${escapeHtml(state.dailyAuditError)}</div></section>`;
+  const audit = state.dailyAudit || {};
+  const bidItems = (audit.activeBidRecommendations || [
+    ...(audit.bidRecommendations14Day || []),
+    ...(audit.bidRecommendations || []),
+  ]).filter((item) => item.action !== "Hold" && activeRecommendation(item.recommendationPeriod === "30-day" ? "bid_30" : "bid_14", item));
+  const searchItems = (audit.searchTermRecommendations || audit.searchTermFindings || [])
+    .filter((item) => activeRecommendation(item.recommendationPeriod === "14-day" ? "search_14" : "search_30", item));
+  return `
+    <div class="stack audit-workspace">
+      <section class="card audit-summary compact">
+        <div class="audit-header-line">
+          <div><h2 class="section-title">Daily campaign audit</h2><span class="sub">Target ${Number(audit.targetRoas || 5).toFixed(2)} ROAS / ${Number(audit.targetAcos || 20).toFixed(0)}% ACOS</span></div>
+          <div class="audit-header-actions"><span class="status-pill performing">Read only</span><button type="button" class="icon-button small" data-refresh-all aria-label="Refresh audit">↻</button></div>
+        </div>
+        <div class="audit-dates"><span>Ads: <b>${escapeHtml(audit.targetReportDate || "not loaded")}</b></span><span>Merch: <b>${escapeHtml(audit.salesDataThrough || "not loaded")}</b></span></div>
+        <details class="settling-note"><summary>ⓘ Yesterday’s conversion data may still be settling.</summary><p>Use the 14-day and 30-day evidence together before making a change.</p></details>
+      </section>
+      <nav class="recommendation-view-tabs" aria-label="Recommendation views">
+        <button type="button" class="${state.recommendationView === "bids" ? "active" : ""}" data-recommendation-view="bids" aria-pressed="${state.recommendationView === "bids"}">Bid Changes</button>
+        <button type="button" class="${state.recommendationView === "search" ? "active" : ""}" data-recommendation-view="search" aria-pressed="${state.recommendationView === "search"}">Search Term Changes</button>
+        <button type="button" class="history-link ${state.recommendationView === "history" ? "active" : ""}" data-recommendation-view="history" aria-pressed="${state.recommendationView === "history"}">History</button>
+      </nav>
+      ${state.recommendationNotice ? `<div class="recommendation-notice" role="status">${escapeHtml(state.recommendationNotice)}</div>` : ""}
+      ${state.recommendationView === "bids" ? `
+        <section class="recommendation-list-section" aria-labelledby="bid-changes-heading">
+          <div class="compact-section-head"><h2 id="bid-changes-heading">Bid Changes</h2><span>${bidItems.length}</span></div>
+          <div class="recommendation-grid">${bidItems.length ? bidItems.map(renderBidRecommendationCard).join("") : `<div class="audit-empty">No active bid changes need attention.</div>`}</div>
+        </section>` : ""}
+      ${state.recommendationView === "search" ? `
+        <section class="recommendation-list-section" aria-labelledby="search-changes-heading">
+          <div class="compact-section-head"><h2 id="search-changes-heading">Search Term Changes</h2><span>${searchItems.length}</span></div>
+          <div class="recommendation-grid">${searchItems.length ? searchItems.map(renderSearchRecommendationCard).join("") : `<div class="audit-empty">No active search-term changes need attention.</div>`}</div>
+        </section>` : ""}
+      ${state.recommendationView === "history" ? `
+        <section class="card audit-section" aria-labelledby="history-heading">
+          <div class="compact-section-head"><h2 id="history-heading">Recommendation History</h2></div>
+          ${renderRecommendationHistory(audit)}
+        </section>` : ""}
+      <section class="card soft-card"><div class="sub">${escapeHtml(audit.caveat || "Recommendations are read-only and require review before changes are made in Amazon Ads.")}</div></section>
+    </div>
+  `;
+}
+
+function renderAI() {
+  return `
+    <div class="stack">
+      <section class="card assistant-intro">
+        <div class="row">
+          <div>
+            <h2 class="section-title">Business Assistant</h2>
+            <div class="sub">Analysis and change history use separate workspaces</div>
+          </div>
+          <span class="status-pill performing">Live</span>
+        </div>
+      </section>
+      <div class="assistant-mode-control three" role="tablist" aria-label="Assistant mode">
+        <button type="button" role="tab" data-ai-mode="audit" class="${state.aiMode === "audit" ? "active" : ""}" aria-selected="${state.aiMode === "audit"}">Daily Audit</button>
+        <button type="button" role="tab" data-ai-mode="ask" class="${state.aiMode === "ask" ? "active" : ""}" aria-selected="${state.aiMode === "ask"}">Ask Assistant</button>
+        <button type="button" role="tab" data-ai-mode="log" class="${state.aiMode === "log" ? "active" : ""}" aria-selected="${state.aiMode === "log"}">Log Changes</button>
+      </div>
+      ${state.aiMode === "audit" ? renderDailyAudit() : state.aiMode === "log" ? renderChangeLogger() : renderAskAssistant()}
+    </div>
+  `;
+}
+
+function renderMore() {
+  const salesStatus = state.salesStatus || {};
+  const freshness = state.dataFreshness || {};
+  const adsStatus = freshness.ads || {};
+  const recommendationStatus = freshness.recommendations || {};
+  const freshnessLabel = (status) => ({
+    current: "Current",
+    refreshing: "Refreshing",
+    authentication_required: "Authentication required",
+    download_failed: "Download failed",
+    import_failed: "Import failed",
+    waiting_for_computer: "Waiting for computer",
+    stale: "Stale",
+    failed: "Failed",
+  }[status] || "Not available");
+  const freshnessTone = (status) => status === "current" ? "performing" : status === "refreshing" ? "watch" : "review";
+  const statusRows = [
+    {
+      label: "Amazon Ads",
+      value: adsStatus.dataThrough || "Not loaded",
+      context: `Report through · Last refresh ${adsStatus.lastSuccessfulRefresh || "not recorded"}`,
+      status: adsStatus.status,
+    },
+    {
+      label: "Merch sales",
+      value: salesStatus.latestSalesDate || state.homeData?.reportDate || "Not loaded",
+      context: `Complete through · Last attempt ${salesStatus.lastAttemptAt || "not recorded"}`,
+      status: salesStatus.status,
+    },
+    {
+      label: "Recommendations",
+      value: recommendationStatus.dataThrough || "Not current",
+      context: recommendationStatus.message || "Waiting for current sales and Ads data.",
+      status: recommendationStatus.status,
+    },
+  ];
+  const usage = state.aiUsage;
+  const settings = usage?.settings || {};
+  return `
+    <div class="stack">
+      <section class="card">
+        <div class="row">
+          <div>
+            <div class="title">Diane Lindenberger</div>
+            <div class="sub">View profile</div>
+          </div>
+          <div class="profile-mark" aria-hidden="true">DL</div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="row">
+          <div>
+            <h2 class="section-title">Data Status</h2>
+            <div class="sub">Dates shown throughout the app come from these local imports.</div>
+          </div>
+          <span class="status-pill ${freshnessTone(recommendationStatus.status)}">${freshnessLabel(recommendationStatus.status)}</span>
+        </div>
+        <div class="status-list">
+          ${statusRows.map(({ label, value, context, status }) => `
+            <div class="status-row">
+              <div><div class="title">${escapeHtml(label)}</div><div class="sub">${escapeHtml(context)}</div></div>
+              <div>
+                <strong>${escapeHtml(value)}</strong>
+                <span class="status-pill ${freshnessTone(status)}">${freshnessLabel(status)}</span>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="sub">Last successful import: ${escapeHtml(salesStatus.lastSuccessfulImport || "None")}</div>
+        <div class="sub">Source: ${escapeHtml(salesStatus.source || "Not available")} | ${Number(salesStatus.rowsProcessed || 0).toLocaleString()} rows processed</div>
+        ${salesStatus.authenticationRequired ? `<div class="negative sub">Amazon Merch login required. Open the dedicated downloader browser profile, complete the login or verification, and then retry the sales refresh.</div>` : ""}
+        ${salesStatus.lastError ? `<div class="negative sub">${escapeHtml(salesStatus.lastError)}</div>` : ""}
+      </section>
+      <button type="button" class="primary-button wide-button" data-refresh-all>Refresh displayed data</button>
+      <section class="card">
+        <div class="row">
+          <div>
+            <h2 class="section-title">AI Usage</h2>
+            <div class="sub">Actual API usage returned by OpenAI. No keys or hidden prompts are shown.</div>
+          </div>
+          <span class="status-pill ${usage && usage.actualCostUsd < Number(settings.monthlyLimitUsd || 10) ? "performing" : "review"}">
+            ${usage ? formatMoney(usage.actualCostUsd) : "Loading"}
+          </span>
+        </div>
+        ${state.aiUsageError ? `<div class="negative sub">${escapeHtml(state.aiUsageError)}</div>` : ""}
+        ${usage ? `
+          <div class="metric-grid compact">
+            ${moneyCard("Actual this month", formatMoney(usage.actualCostUsd), usage.month)}
+            ${moneyCard("Projected month-end", formatMoney(usage.projectedMonthEndCostUsd), `Limit ${formatMoney(settings.monthlyLimitUsd)}`)}
+            ${moneyCard("Requests", Number(usage.requestCount || 0).toLocaleString(), `${Number(usage.todayRequestCount || 0).toLocaleString()} today`)}
+            ${moneyCard("Tool calls", Number(usage.toolCallCount || 0).toLocaleString(), `${Number(usage.averageResponseTimeMs || 0).toLocaleString()} ms average`)}
+          </div>
+          <div class="status-list">
+            <div class="status-row"><div class="title">Input tokens</div><strong>${Number(usage.inputTokens || 0).toLocaleString()}</strong></div>
+            <div class="status-row"><div class="title">Cached input tokens</div><strong>${Number(usage.cachedInputTokens || 0).toLocaleString()}</strong></div>
+            <div class="status-row"><div class="title">Output tokens</div><strong>${Number(usage.outputTokens || 0).toLocaleString()}</strong></div>
+            <div class="status-row"><div class="title">Calls by model</div><strong>${(usage.callsByModel || []).map((item) => `${item.model}: ${item.calls}`).join(" | ") || "None"}</strong></div>
+            <div class="status-row"><div class="title">Calls by status</div><strong>${(usage.callsByStatus || []).map((item) => `${item.status}: ${item.calls}`).join(" | ") || "None"}</strong></div>
+          </div>
+          <h3 class="section-title">Usage controls</h3>
+          <div class="custom-range ai-settings-grid">
+            <label>Warning ($)<input type="number" min="0.01" step="0.01" data-ai-setting="warningThresholdUsd" value="${escapeHtml(settings.warningThresholdUsd)}"></label>
+            <label>Monthly limit ($)<input type="number" min="0.01" step="0.01" data-ai-setting="monthlyLimitUsd" value="${escapeHtml(settings.monthlyLimitUsd)}"></label>
+            <label>Daily requests<input type="number" min="1" step="1" data-ai-setting="dailyRequestLimit" value="${escapeHtml(settings.dailyRequestLimit)}"></label>
+            <label>Max input tokens<input type="number" min="500" step="100" data-ai-setting="maxInputTokens" value="${escapeHtml(settings.maxInputTokens)}"></label>
+            <label>Max output tokens<input type="number" min="100" step="100" data-ai-setting="maxOutputTokens" value="${escapeHtml(settings.maxOutputTokens)}"></label>
+            <label>Terra escalation<input type="checkbox" data-ai-setting="terraEnabled" ${settings.terraEnabled ? "checked" : ""}></label>
+          </div>
+          <div class="sub">Default model: ${escapeHtml(settings.defaultModel || "Not configured")} | Complex model: ${escapeHtml(settings.complexModel || "Not configured")}</div>
+          <button type="button" class="primary-button wide-button" data-save-ai-settings ${state.aiSettingsSaving ? "disabled" : ""}>${state.aiSettingsSaving ? "Saving..." : "Save AI limits"}</button>
+          ${(usage.recentErrors || []).length ? `
+            <h3 class="section-title">Recent errors</h3>
+            <div class="status-list">${usage.recentErrors.map((item) => `
+              <div class="status-row"><div><div class="title">${escapeHtml(item.errorCode)}</div><div class="sub">${escapeHtml(item.createdAt)}</div></div><strong>${escapeHtml(item.model)}</strong></div>
+            `).join("")}</div>
+          ` : ""}
+          ${(usage.recentToolCalls || []).length ? `
+            <h3 class="section-title">Recent approved tool calls</h3>
+            <div class="status-list">${usage.recentToolCalls.map((item) => `
+              <div class="status-row"><div><div class="title">${escapeHtml(item.tool)}</div><div class="sub">${escapeHtml(item.createdAt)}</div></div><strong>${escapeHtml(item.status)}</strong></div>
+            `).join("")}</div>
+          ` : ""}
+        ` : `<div class="sub">Loading AI usage...</div>`}
+      </section>
+      <section class="card sales-upload-card">
+        <div>
+          <h2 class="section-title">Upload Merch sales report</h2>
+          <div class="sub">For online use, select the downloaded CSV or Excel report here. It will refresh the sales periods and daily audit.</div>
+        </div>
+        <input type="file" data-sales-upload accept=".csv,.xlsx,.xls" aria-label="Choose Merch sales report">
+        <button type="button" class="primary-button wide-button" data-sales-upload-button ${state.salesUploadLoading ? "disabled" : ""}>${state.salesUploadLoading ? "Uploading and refreshing..." : "Upload sales report"}</button>
+        ${state.salesUploadMessage ? `<div class="positive sub">${escapeHtml(state.salesUploadMessage)}</div>` : ""}
+        ${state.salesUploadError ? `<div class="negative sub">${escapeHtml(state.salesUploadError)}</div>` : ""}
+      </section>
+      <section class="card soft-card">
+        <h2 class="section-title">Private Local App</h2>
+        <div class="sub">Merch sales update when a new report is imported. Amazon Ads data updates through the approved API sync. Refreshing this screen reloads the newest data already stored on this computer.</div>
+      </section>
+    </div>
+  `;
+}
+
+function render({ preserveScroll = true } = {}) {
+  if (state.logCampaignPickerOpen && state.page === "ai" && state.aiMode === "log") {
+    state.logDeferredRender = true;
+    return;
+  }
+  if (state.recommendationDialogOpen && state.page === "ai" && state.aiMode === "audit") {
+    state.recommendationDeferredRender = true;
+    return;
+  }
+  if (state.page === "analytics" && hasSelectedContentText()) {
+    state.analyticsRenderPending = true;
+    return;
+  }
+  const [title, kicker] = pageMeta[state.page];
+  document.querySelector(".phone").dataset.page = state.page;
+  document.querySelector("#page-title").textContent = title;
+  document.querySelector("#page-kicker").textContent = kicker;
+  const appBack = document.querySelector("[data-app-back]");
+  if (appBack) {
+    const hidden = state.page === "home";
+    appBack.hidden = hidden;
+    appBack.setAttribute("aria-label", backLabel());
+    appBack.setAttribute("title", backLabel());
+    appBack.onclick = goBack;
+  }
+  document.querySelectorAll(".nav-item").forEach((button) => {
+    button.classList.toggle("active", button.dataset.page === state.page);
+  });
+
+  const content = document.querySelector("#app-content");
+  const previousScrollTop = content.scrollTop;
+  const activeAiInput = document.activeElement?.matches("[data-ai-input]");
+  const activeAiSelection = activeAiInput ? document.activeElement.selectionStart : null;
+  const activeChangeDescription = document.activeElement?.matches("[data-change-description]");
+  const activeChangeSelection = activeChangeDescription ? document.activeElement.selectionStart : null;
+  const pages = { home: renderHome, ads: renderAds, analytics: renderAnalytics, ai: renderAI, more: renderMore };
+  content.innerHTML = pages[state.page]();
+  if (state.page === "ai" && state.aiMode === "log" && state.logScrollToBottom) {
+    const pendingConfirmation = content.querySelector('[data-log-source="logger"]:not([disabled])');
+    (pendingConfirmation || content.querySelector(".change-thread"))?.scrollIntoView({ block: "center" });
+    state.logScrollToBottom = false;
+  } else if (state.page === "ai" && state.aiScrollToBottom) {
+    state.aiScrollToBottom = false;
+    const scrollToNewestAssistantContent = () => {
+      content.scrollTo({
+        top: content.scrollHeight,
+        left: content.scrollLeft,
+        behavior: "auto",
+      });
+    };
+    scrollToNewestAssistantContent();
+    requestAnimationFrame(() => {
+      scrollToNewestAssistantContent();
+      requestAnimationFrame(scrollToNewestAssistantContent);
+    });
+  } else if (preserveScroll) {
+    content.scrollTop = previousScrollTop;
+  } else {
+    content.scrollTop = 0;
+  }
+
+  document.querySelectorAll("[data-page]").forEach((button) => {
+    button.onclick = () => navigateToPage(button.dataset.page);
+  });
+
+  document.querySelectorAll("[data-refresh-all]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      await Promise.all([
+        loadHomeData(),
+        loadSalesStatus(),
+        loadRoyaltyTier(),
+        loadAdsData(),
+        loadCampaignsData(),
+        loadAnalyticsData(),
+        loadAdImpactData(),
+        loadDailyAudit(),
+        loadChangeOptions(),
+        loadRecommendationInteractions(),
+        loadAIUsage(),
+      ]);
+    });
+  });
+
+  document.querySelectorAll("[data-save-ai-settings]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const values = {};
+      document.querySelectorAll("[data-ai-setting]").forEach((input) => {
+        values[input.dataset.aiSetting] = input.type === "checkbox" ? input.checked : Number(input.value);
+      });
+      state.aiSettingsSaving = true;
+      render();
+      try {
+        const response = await fetch("/api/ai-settings", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: values }),
+        });
+        if (!response.ok) throw new Error(`API returned ${response.status}`);
+        await loadAIUsage();
+      } catch (error) {
+        state.aiUsageError = error?.message || "AI settings could not be saved.";
+      } finally {
+        state.aiSettingsSaving = false;
+        render();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-period]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.period = button.dataset.period;
+      if (state.period === "Custom" && !state.analyticsCustomStart) {
+        const availableEnd = state.analyticsData?.dataThrough || new Date(Date.now() - 86400000).toLocaleDateString("en-CA");
+        const end = new Date(`${availableEnd}T00:00:00`);
+        const start = new Date(end);
+        start.setDate(start.getDate() - 29);
+        state.analyticsCustomStart = start.toLocaleDateString("en-CA");
+        state.analyticsCustomEnd = availableEnd;
+      }
+      loadAnalyticsData();
+      render();
+    });
+  });
+
+  const analyticsCustomApply = document.querySelector("[data-analytics-custom-apply]");
+  if (analyticsCustomApply) {
+    analyticsCustomApply.addEventListener("click", () => {
+      state.analyticsCustomStart = document.querySelector("[data-analytics-custom-start]")?.value || "";
+      state.analyticsCustomEnd = document.querySelector("[data-analytics-custom-end]")?.value || "";
+      loadAnalyticsData();
+    });
+  }
+
+  document.querySelectorAll("[data-home-period]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.homePeriod = button.dataset.homePeriod;
+      state.homeData = null;
+      state.homeLoading = true;
+      render();
+      loadHomeData();
+    });
+  });
+
+  const campaignSearch = document.querySelector("[data-campaign-search]");
+  if (campaignSearch) {
+    campaignSearch.addEventListener("input", (event) => {
+      state.campaignSearch = event.target.value;
+      render();
+      const nextSearch = document.querySelector("[data-campaign-search]");
+      nextSearch?.focus();
+      nextSearch?.setSelectionRange(state.campaignSearch.length, state.campaignSearch.length);
+    });
+  }
+
+  document.querySelectorAll("[data-campaign-name]").forEach((button) => {
+    button.addEventListener("click", () => loadCampaignDetail(button.dataset.campaignName));
+  });
+
+  const campaignBack = document.querySelector("[data-campaign-back]");
+  if (campaignBack) {
+    campaignBack.addEventListener("click", goBack);
+  }
+
+  document.querySelectorAll("[data-ad-group]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedAdGroup = button.dataset.adGroup || "";
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-ads-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.adsTab = button.dataset.adsTab;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-ads-period]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.adsPeriod = button.dataset.adsPeriod;
+      if (state.adsPeriod === "custom" && !state.adsCustomStart) {
+        const end = new Date();
+        const start = new Date();
+        start.setDate(start.getDate() - 6);
+        state.adsCustomStart = start.toLocaleDateString("en-CA");
+        state.adsCustomEnd = end.toLocaleDateString("en-CA");
+      }
+      state.adsData = null;
+      render();
+      if (state.adsPeriod !== "custom") loadAdsData();
+    });
+  });
+
+  const customApply = document.querySelector("[data-ads-custom-apply]");
+  if (customApply) {
+    customApply.addEventListener("click", () => {
+      state.adsCustomStart = document.querySelector("[data-ads-custom-start]")?.value || "";
+      state.adsCustomEnd = document.querySelector("[data-ads-custom-end]")?.value || "";
+      loadAdsData();
+    });
+  }
+
+  document.querySelectorAll("[data-analytics-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.analyticsToggle === "sales") {
+        state.analyticsShowSales = !state.analyticsShowSales;
+      }
+
+      if (button.dataset.analyticsToggle === "royalties") {
+        state.analyticsShowRoyalties = !state.analyticsShowRoyalties;
+      }
+
+      if (!state.analyticsShowSales && !state.analyticsShowRoyalties) {
+        state.analyticsShowSales = true;
+      }
+
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-analytics-granularity]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.analyticsGranularity = button.dataset.analyticsGranularity || "daily";
+      render({ preserveScroll: true });
+    });
+  });
+
+  document.querySelectorAll("[data-ai-suggestion]").forEach((button) => {
+    button.addEventListener("click", () => askAssistant(button.dataset.aiSuggestion));
+  });
+
+  document.querySelectorAll("[data-audit-question]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const question = button.dataset.auditQuestion;
+      state.aiMode = "ask";
+      render();
+      askAssistant(question);
+    });
+  });
+
+  document.querySelectorAll("[data-recommendation-action]").forEach((button) => {
+    button.onclick = () => handleRecommendationAction(button);
+  });
+
+  document.querySelectorAll("[data-recommendation-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.recommendationView = button.dataset.recommendationView || "bids";
+      render({ preserveScroll: true });
+    });
+  });
+
+  document.querySelectorAll("[data-recommendation-details]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = button.dataset.recommendationDetails || "";
+      const scrollContainer = document.querySelector(".content");
+      const scrollTop = scrollContainer?.scrollTop || 0;
+      const scrollLeft = scrollContainer?.scrollLeft || 0;
+      const details = document.getElementById(button.getAttribute("aria-controls"));
+      const expanded = state.expandedRecommendationId !== id;
+      state.expandedRecommendationId = expanded ? id : "";
+      if (details) details.hidden = !expanded;
+      button.setAttribute("aria-expanded", String(expanded));
+      button.textContent = expanded ? "Hide details" : "Details";
+      const restoreScroll = () => {
+        scrollContainer?.scrollTo({ left: scrollLeft, top: scrollTop, behavior: "auto" });
+      };
+      restoreScroll();
+      requestAnimationFrame(restoreScroll);
+    });
+  });
+
+  document.querySelectorAll("[data-recommendation-open]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      // The app body uses `.content` as its scroll container. Opening a
+      // native dialog can cause Android Chrome to scroll that container to
+      // the dialog's DOM position, so capture and restore it explicitly.
+      const scrollContainer = document.querySelector(".content");
+      const scrollTop = scrollContainer?.scrollTop || 0;
+      const scrollLeft = scrollContainer?.scrollLeft || 0;
+      const dialog = button.closest("[data-recommendation-card], .recommendation-interaction")?.querySelector("[data-recommendation-dialog]");
+      if (dialog) {
+        state.recommendationDialogOpen = true;
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+      }
+      const restoreScroll = () => {
+        if (!scrollContainer) return;
+        scrollContainer.scrollTo({ left: scrollLeft, top: scrollTop, behavior: "auto" });
+      };
+      restoreScroll();
+      requestAnimationFrame(restoreScroll);
+    });
+  });
+
+  document.querySelectorAll("[data-recommendation-dialog-close]").forEach((button) => {
+    const dialog = button.closest("dialog");
+    const finishDialog = () => {
+      state.recommendationDialogOpen = false;
+      if (state.recommendationDeferredRender) {
+        state.recommendationDeferredRender = false;
+        requestAnimationFrame(() => render({ preserveScroll: true }));
+      }
+    };
+    button.addEventListener("click", () => {
+      dialog?.close();
+      finishDialog();
+    });
+    dialog?.addEventListener("close", finishDialog, { once: true });
+  });
+
+  const clearRecommendation = document.querySelector("[data-clear-recommendation]");
+  if (clearRecommendation) {
+    clearRecommendation.onclick = () => {
+      state.activeRecommendation = null;
+      render();
+    };
+  }
+
+  document.querySelectorAll("[data-ai-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.aiMode = button.dataset.aiMode;
+      state.logError = "";
+      render();
+      if (state.aiMode === "log" && !state.changeOptions) loadChangeOptions();
+    });
+  });
+
+  document.querySelectorAll("[data-change-details-toggle]").forEach((row) => {
+    const toggleChangeDetails = (event) => {
+      if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const id = row.dataset.changeDetailsToggle || "";
+      const content = document.querySelector("#app-content");
+      const scrollTop = content?.scrollTop || 0;
+      const expanded = state.expandedChangeId !== id;
+      state.expandedChangeId = expanded ? id : "";
+      state.editingChangeId = "";
+      render({ preserveScroll: true });
+      const restoreScroll = () => {
+        const currentContent = document.querySelector("#app-content");
+        if (currentContent) currentContent.scrollTop = scrollTop;
+      };
+      restoreScroll();
+      requestAnimationFrame(restoreScroll);
+      const chevron = row.querySelector(".recent-change-chevron");
+      if (chevron) chevron.textContent = expanded ? "⌃" : "⌄";
+    };
+    row.addEventListener("click", toggleChangeDetails);
+    row.addEventListener("keydown", toggleChangeDetails);
+  });
+
+  document.querySelectorAll("[data-change-edit]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = button.dataset.changeEdit || "";
+      state.expandedChangeId = id;
+      state.editingChangeId = id;
+      state.logError = "";
+      render({ preserveScroll: true });
+    });
+  });
+
+  document.querySelectorAll("[data-change-edit-cancel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editingChangeId = "";
+      state.logError = "";
+      render({ preserveScroll: true });
+    });
+  });
+
+  document.querySelectorAll("[data-change-edit-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveEditedCampaignChange(form.dataset.changeEditForm || "", form);
+    });
+  });
+
+  document.querySelectorAll("[data-change-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextPage = Number(button.dataset.changePage);
+      if (!Number.isInteger(nextPage) || nextPage < 0) return;
+      state.changeHistoryPage = nextPage;
+      state.expandedChangeId = "";
+      state.editingChangeId = "";
+      render({ preserveScroll: true });
+      document.querySelector(".recent-changes-card")?.scrollIntoView({ block: "nearest" });
+    });
+  });
+
+  document.querySelectorAll("[data-log-change]").forEach((button) => {
+    button.addEventListener("click", () => saveCampaignChange(Number(button.dataset.logChange), button.dataset.logSource || "ai"));
+  });
+
+  const changeCampaign = document.querySelector("[data-change-campaign]");
+  if (changeCampaign) {
+    const finishCampaignSelection = () => {
+      state.logCampaignPickerOpen = false;
+      if (state.logDeferredRender) {
+        state.logDeferredRender = false;
+        requestAnimationFrame(() => render());
+      }
+    };
+    changeCampaign.addEventListener("pointerdown", () => {
+      state.logCampaignPickerOpen = true;
+    });
+    changeCampaign.addEventListener("focus", () => {
+      state.logCampaignPickerOpen = true;
+    });
+    changeCampaign.addEventListener("change", (event) => {
+      state.logCampaign = event.target.value;
+      finishCampaignSelection();
+    });
+    changeCampaign.addEventListener("blur", finishCampaignSelection);
+  }
+
+  const changeDate = document.querySelector("[data-change-date]");
+  if (changeDate) {
+    changeDate.addEventListener("change", (event) => {
+      state.logDate = event.target.value;
+    });
+  }
+
+  const changeDescription = document.querySelector("[data-change-description]");
+  if (changeDescription) {
+    changeDescription.addEventListener("input", (event) => {
+      state.logDescription = event.target.value;
+    });
+    changeDescription.addEventListener("pointerdown", () => {
+      changeDescription.focus();
+    });
+  }
+
+  const changePreview = document.querySelector("[data-change-preview]");
+  if (changePreview) changePreview.addEventListener("click", previewLoggedChange);
+
+  const salesUploadButton = document.querySelector("[data-sales-upload-button]");
+  if (salesUploadButton) {
+    salesUploadButton.addEventListener("click", () => {
+      const file = document.querySelector("[data-sales-upload]")?.files?.[0];
+      if (!file) {
+        state.salesUploadError = "Choose a Merch sales CSV or Excel report first.";
+        render();
+        return;
+      }
+      uploadSalesReport(file);
+    });
+  }
+
+  const aiInput = document.querySelector("[data-ai-input]");
+  const aiSend = document.querySelector("[data-ai-send]");
+  if (aiInput && aiSend) {
+    const submitQuestion = () => {
+      const question = aiInput.value;
+      state.aiDraft = "";
+      aiInput.value = "";
+      askAssistant(question);
+    };
+    aiInput.addEventListener("input", () => {
+      state.aiDraft = aiInput.value;
+    });
+    aiInput.addEventListener("pointerdown", () => {
+      aiInput.focus();
+    });
+    aiSend.addEventListener("click", submitQuestion);
+    aiInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submitQuestion();
+      }
+    });
+  }
+
+  if (state.aiFocusComposer && state.page === "ai" && state.aiMode === "ask") {
+    state.aiFocusComposer = false;
+    requestAnimationFrame(() => document.querySelector("[data-ai-input]")?.focus());
+  }
+  if (activeAiInput) {
+    const nextAiInput = document.querySelector("[data-ai-input]");
+    if (nextAiInput) {
+      nextAiInput.focus();
+      if (typeof activeAiSelection === "number" && nextAiInput.setSelectionRange) {
+        nextAiInput.setSelectionRange(activeAiSelection, activeAiSelection);
+      }
+    }
+  }
+  if (activeChangeDescription) {
+    const nextChangeDescription = document.querySelector("[data-change-description]");
+    if (nextChangeDescription) {
+      nextChangeDescription.focus();
+      if (typeof activeChangeSelection === "number" && nextChangeDescription.setSelectionRange) {
+        nextChangeDescription.setSelectionRange(activeChangeSelection, activeChangeSelection);
+      }
+    }
+  }
+}
+
+render();
+loadHomeData();
+loadSalesStatus();
+loadRoyaltyTier();
+loadAdsData();
+loadCampaignsData();
+loadAnalyticsData();
+loadAdImpactData();
+loadDailyAudit();
+loadChangeOptions();
+loadRecommendationInteractions();

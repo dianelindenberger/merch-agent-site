@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Merch Agent v2</title>
+  <meta name="theme-color" content="#eef7ff">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="/manifest.webmanifest?v=2">
+  <link rel="icon" href="/merch-agent-icon-192-v2.png" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="/merch-agent-icon-192-v2.png">
+  <link rel="stylesheet" href="styles.css?v=67">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="phone" aria-label="Merch Agent v2">
+      <section class="top-bar">
+        <button class="back-icon-button" type="button" aria-label="Go back" title="Go back" data-app-back hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18 9 12l6-6"></path></svg>
+        </button>
+        <div>
+          <p class="eyebrow" id="page-kicker">Merch Agent</p>
+          <h1 id="page-title">Home</h1>
+        </div>
+        <button class="icon-button" type="button" aria-label="Refresh displayed data" title="Refresh displayed data" data-refresh-all>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66"></path><path d="M20 4v7h-7"></path></svg>
+        </button>
+      </section>
+
+      <section class="content" id="app-content"></section>
+
+      <nav class="bottom-nav" aria-label="Primary">
+        <button class="nav-item active" type="button" data-page="home">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8"></path><path d="M5 10v10h14V10"></path></svg>
+          <span>Home</span>
+        </button>
+        <button class="nav-item" type="button" data-page="ads">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13"></path><path d="m22 2-7 20-4-9-9-4 20-7Z"></path></svg>
+          <span>Ads</span>
+        </button>
+        <button class="nav-item" type="button" data-page="analytics">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-9"></path></svg>
+          <span>Analytics</span>
+        </button>
+        <button class="nav-item" type="button" data-page="ai">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v4"></path><path d="M12 18v4"></path><path d="M4.93 4.93 7.76 7.76"></path><path d="m16.24 16.24 2.83 2.83"></path><path d="M2 12h4"></path><path d="M18 12h4"></path><path d="m4.93 19.07 2.83-2.83"></path><path d="m16.24 7.76 2.83-2.83"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          <span>AI</span>
+        </button>
+        <button class="nav-item" type="button" data-page="more">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path></svg>
+          <span>More</span>
+        </button>
+      </nav>
+    </section>
+  </main>
+  <script src="app.js?v=82"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "name": "Merch Agent",
+  "short_name": "Merch Agent",
+  "description": "Daily sales, royalty, advertising, and recommendation analysis for Merch on Demand.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#eef7ff",
+  "theme_color": "#eef7ff",
+  "icons": [
+    {
+      "src": "/merch-agent-icon-192-v2.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/merch-agent-icon-512-v2.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
