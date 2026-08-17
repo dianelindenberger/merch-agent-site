@@ -1,9 +1,9 @@
-const CACHE_NAME = "merch-agent-static-v33";
+const CACHE_NAME = "merch-agent-static-v45";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/styles.css?v=55",
-  "/app.js?v=70",
+  "/styles.css?v=67",
+  "/app.js?v=82",
   "/manifest.webmanifest?v=2",
   "/merch-agent-icon-192-v2.png",
   "/merch-agent-icon-512-v2.png"
@@ -45,12 +45,12 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    caches.match(request).then((cached) => cached || fetch(request).then((response) => {
+    fetch(request).then((response) => {
       if (response.ok) {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
       }
       return response;
-    }))
+    }).catch(() => caches.match(request))
   );
 });

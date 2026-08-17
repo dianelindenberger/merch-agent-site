@@ -27,8 +27,12 @@ const state = {
   analyticsError: "",
   analyticsShowSales: true,
   analyticsShowRoyalties: true,
+  analyticsGranularity: "daily",
   analyticsCustomStart: "",
   analyticsCustomEnd: "",
+  adImpactData: null,
+  adImpactError: "",
+  analyticsRenderPending: false,
   dailyAudit: null,
   dailyAuditError: "",
   dailyAuditLoading: false,
@@ -57,6 +61,7 @@ const state = {
   logError: "",
   logScrollToBottom: false,
   expandedChangeId: "",
+  editingChangeId: "",
   changeHistoryPage: 0,
   salesUploadLoading: false,
   salesUploadMessage: "",
@@ -165,8 +170,27 @@ function navigateToPage(page) {
   } else {
     render({ preserveScroll: false });
     if (page === "more") loadAIUsage();
+    if (page === "analytics") loadAdImpactData();
   }
 }
+
+function hasSelectedContentText() {
+  const selection = window.getSelection?.();
+  const content = document.querySelector("#app-content");
+  return Boolean(
+    selection
+    && !selection.isCollapsed
+    && content
+    && (content.contains(selection.anchorNode) || content.contains(selection.focusNode))
+  );
+}
+
+document.addEventListener("selectionchange", () => {
+  if (state.analyticsRenderPending && !hasSelectedContentText()) {
+    state.analyticsRenderPending = false;
+    render({ preserveScroll: true });
+  }
+});
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -628,6 +652,38 @@ async function saveCampaignChange(messageIndex, source = "ai") {
   render();
 }
 
+async function saveEditedCampaignChange(changeId, form) {
+  if (!changeId || !form || state.logLoading) return;
+  const campaignName = form.querySelector("[data-change-edit-campaign]")?.value || "";
+  const effectiveDate = form.querySelector("[data-change-edit-date]")?.value || "";
+  const details = form.querySelector("[data-change-edit-details]")?.value.trim() || "";
+  if (!campaignName || !effectiveDate || !details) {
+    state.logError = "Choose a campaign and date, then describe what changed.";
+    render({ preserveScroll: true });
+    return;
+  }
+
+  state.logLoading = true;
+  state.logError = "";
+  render({ preserveScroll: true });
+  try {
+    const response = await fetch("/api/campaign-change-edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: changeId, campaignName, effectiveDate, details }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `API returned ${response.status}`);
+    state.editingChangeId = "";
+    await loadChangeOptions();
+  } catch (error) {
+    state.logError = error.message || "The change-log entry could not be updated.";
+  } finally {
+    state.logLoading = false;
+    render({ preserveScroll: true });
+  }
+}
+
 async function loadAnalyticsData() {
   try {
     const params = new URLSearchParams({ period: state.period });
@@ -648,6 +704,19 @@ async function loadAnalyticsData() {
     state.analyticsError = "Analytics needs the v2 data server and daily sales imports.";
   }
 
+  if (state.page === "analytics") render();
+}
+
+async function loadAdImpactData() {
+  try {
+    const response = await fetch("/api/ad-impact?limit=20", { cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    state.adImpactData = await response.json();
+    state.adImpactError = "";
+  } catch (error) {
+    state.adImpactData = null;
+    state.adImpactError = "Ad-impact analysis needs matching daily Merch and advertised-product reports.";
+  }
   if (state.page === "analytics") render();
 }
 
@@ -824,25 +893,38 @@ function sampleAnalyticsData() {
   };
 }
 
+function analyticsPointsForGranularity(points) {
+  if (state.analyticsGranularity !== "monthly") return points;
+  const grouped = new Map();
+  points.forEach((point) => {
+    const key = String(point.date || "").slice(0, 7);
+    const month = grouped.get(key) || { date: `${key}-01`, sales: 0, royalties: 0 };
+    month.sales += Number(point.sales || 0);
+    month.royalties += Number(point.royalties || 0);
+    grouped.set(key, month);
+  });
+  return [...grouped.values()];
+}
+
 function renderComboChart(data) {
-  const points = data.points || [];
+  const points = analyticsPointsForGranularity(data.points || []);
   const royaltyCurrency = data.royaltyChartCurrency || "USD";
 
   if (!points.length) {
     return `<div class="sub">No daily sales points are available for this period yet.</div>`;
   }
 
-  const width = 360;
-  const height = 240;
-  const top = 22;
-  const right = 8;
-  const bottom = 44;
-  const left = 8;
+  const width = 640;
+  const height = 270;
+  const top = 24;
+  const right = 54;
+  const bottom = 22;
+  const left = 42;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
   const maxSales = Math.max(1, ...points.map((point) => point.sales || 0));
   const maxRoyalties = Math.max(1, ...points.map((point) => point.royalties || 0));
-  const gap = 5;
+  const gap = points.length > 45 ? 2 : 5;
   const slot = chartWidth / points.length;
   const barWidth = Math.max(5, Math.min(15, slot - gap));
 
@@ -852,32 +934,26 @@ function renderComboChart(data) {
 
   const grid = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
     const y = top + chartHeight - ratio * chartHeight;
-    return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="#e8eef3" stroke-width="1"/>`;
+    return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="#e8edf2" stroke-width="1" vector-effect="non-scaling-stroke" shape-rendering="crispEdges"/>`;
   }).join("");
   const scaleRatios = [0, 0.25, 0.5, 0.75, 1];
   const royaltySymbol = { USD: "$", EUR: "€", GBP: "£", JPY: "¥" }[royaltyCurrency] || `${royaltyCurrency} `;
-  const salesAxis = state.analyticsShowSales ? scaleRatios.map((ratio) => {
-    const y = top + chartHeight - ratio * chartHeight;
-    return `<text x="${left - 6}" y="${y + 3}" text-anchor="end" class="chart-tick-label">${Math.round(maxSales * ratio).toLocaleString()}</text>`;
-  }).join("") : "";
-  const royaltiesAxis = state.analyticsShowRoyalties ? scaleRatios.map((ratio) => {
-    const y = top + chartHeight - ratio * chartHeight;
-    return `<text x="${width - right + 6}" y="${y + 3}" text-anchor="start" class="chart-tick-label">${royaltySymbol}${Math.round(maxRoyalties * ratio).toLocaleString()}</text>`;
-  }).join("") : "";
+  const salesAxis = [...scaleRatios].reverse().map((ratio) => Math.round(maxSales * ratio).toLocaleString());
+  const royaltiesAxis = [...scaleRatios].reverse().map((ratio) => `${royaltySymbol}${Math.round(maxRoyalties * ratio).toLocaleString()}`);
 
   const barsSvg = state.analyticsShowSales
     ? points.map((point, index) => {
       const x = xForIndex(index) - barWidth / 2;
       const y = yForSales(point.sales);
       const barHeight = top + chartHeight - y;
-      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="4" fill="#d9ecff" stroke="#68a2e8" stroke-width="1.4"/>`;
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="1" fill="#e8f1ff" stroke="#79a5e6" stroke-width="1.15" vector-effect="non-scaling-stroke" shape-rendering="crispEdges"><title>${escapeHtml(formatShortDate(point.date))}: ${Number(point.sales || 0).toLocaleString()} units</title></rect>`;
     }).join("")
     : "";
 
   const linePoints = points.map((point, index) => `${xForIndex(index).toFixed(2)},${yForRoyalties(point.royalties).toFixed(2)}`).join(" ");
   const royaltiesSvg = state.analyticsShowRoyalties
-    ? `<polyline points="${linePoints}" fill="none" stroke="#e9788f" stroke-width="2.4"/>
-       ${points.map((point, index) => `<circle cx="${xForIndex(index).toFixed(2)}" cy="${yForRoyalties(point.royalties).toFixed(2)}" r="3.5" fill="#ffffff" stroke="#e9788f" stroke-width="2"/>`).join("")}`
+    ? `<polyline points="${linePoints}" fill="none" stroke="#e47c91" stroke-width="1.8" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+       ${points.map((point, index) => `<circle cx="${xForIndex(index).toFixed(2)}" cy="${yForRoyalties(point.royalties).toFixed(2)}" r="${points.length > 45 ? 1.7 : 2.5}" fill="#ffffff" stroke="#e47c91" stroke-width="1.5" vector-effect="non-scaling-stroke"><title>${escapeHtml(formatShortDate(point.date))}: ${formatCurrency(point.royalties || 0, royaltyCurrency)} royalties</title></circle>`).join("")}`
     : "";
 
   const labelStep = Math.max(1, Math.ceil((points.length - 1) / 4));
@@ -892,14 +968,14 @@ function renderComboChart(data) {
   return `
     <div class="chart-scale-labels"><span>Units sold</span><span>${escapeHtml(royaltyCurrency)} royalties</span></div>
     <div class="chart-with-axes">
-      <div class="chart-y-axis left-axis"><span>${maxSales.toLocaleString()}</span><span>0</span></div>
-      <svg class="combo-chart" viewBox="0 0 ${width} ${height - 28}" role="img" aria-label="Sales and ${escapeHtml(royaltyCurrency)} royalties analytics chart">
+      <div class="chart-y-axis left-axis">${state.analyticsShowSales ? salesAxis.map((label) => `<span>${label}</span>`).join("") : ""}</div>
+      <svg class="combo-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Sales and ${escapeHtml(royaltyCurrency)} royalties analytics chart">
         ${grid}
-        <line x1="${left}" y1="${top + chartHeight}" x2="${width - right}" y2="${top + chartHeight}" stroke="#d8e1e8" stroke-width="1"/>
+        <line x1="${left}" y1="${top + chartHeight}" x2="${width - right}" y2="${top + chartHeight}" stroke="#d8e1e8" stroke-width="1" vector-effect="non-scaling-stroke" shape-rendering="crispEdges"/>
         ${barsSvg}
         ${royaltiesSvg}
       </svg>
-      <div class="chart-y-axis right-axis"><span>${formatCurrency(maxRoyalties, royaltyCurrency)}</span><span>${formatCurrency(0, royaltyCurrency)}</span></div>
+      <div class="chart-y-axis right-axis">${state.analyticsShowRoyalties ? royaltiesAxis.map((label) => `<span>${label}</span>`).join("") : ""}</div>
     </div>
     <div class="chart-axis-labels" style="grid-template-columns: repeat(${labelIndexes.length}, minmax(0, 1fr));">
       ${labelIndexes.map((index) => `<span>${escapeHtml(formatShortDate(points[index].date))}</span>`).join("")}
@@ -944,7 +1020,14 @@ function renderAnalytics() {
       <section class="card analytics-chart-card">
         <div class="analytics-controls">
           <div>
-            <div class="analytics-control-label">Toggle Data</div>
+            <div class="analytics-control-label">Chart style</div>
+            <div class="analytics-toggle-row">
+              <button class="chip ${state.analyticsGranularity === "daily" ? "active" : ""}" data-analytics-granularity="daily">Daily</button>
+              <button class="chip ${state.analyticsGranularity === "monthly" ? "active" : ""}" data-analytics-granularity="monthly">Monthly</button>
+            </div>
+          </div>
+          <div>
+            <div class="analytics-control-label">Toggle data</div>
             <div class="analytics-toggle-row">
               <button class="chip ${state.analyticsShowSales ? "active" : ""}" data-analytics-toggle="sales">Sales</button>
               <button class="chip ${state.analyticsShowRoyalties ? "active" : ""}" data-analytics-toggle="royalties">USD Royalties</button>
@@ -957,7 +1040,82 @@ function renderAnalytics() {
         ${moneyCard("Sales", Number(totals.sales || 0).toLocaleString(), `${points.length} daily points`)}
         ${moneyCard("Reported royalties", royaltySummary, "Kept in original currencies")}
       </section>
+      ${renderAdImpact()}
     </div>
+  `;
+}
+
+function renderAdImpact() {
+  const data = state.adImpactData;
+  if (state.adImpactError) {
+    return `<section class="card ad-impact-card"><h2 class="section-title">Possible ad impact on total sales</h2><div class="sub">${escapeHtml(state.adImpactError)}</div></section>`;
+  }
+  if (!data) {
+    return `<section class="card ad-impact-card"><h2 class="section-title">Possible ad impact on total sales</h2><div class="sub">Cross-referencing historical daily Merch sales with advertised-product performance...</div></section>`;
+  }
+  const summary = data.summary || {};
+  const findings = data.findings || [];
+  const confidenceClass = (value) => String(value || "low").toLowerCase();
+  const impactValue = (window, field, suffix = "") => window && Number.isFinite(Number(window[field]))
+    ? `${Number(window[field]).toFixed(field === "impressionsPerDay" ? 0 : 2)}${suffix}`
+    : "Not available";
+  const windowMetrics = (label, window) => `
+    <div class="impact-window">
+      <div class="label">${label}</div>
+      <div class="impact-window-grid">
+        <span>Total sales/day <strong>${impactValue(window, "totalUnitsPerDay")}</strong></span>
+        <span>Attributed units/day <strong>${impactValue(window, "attributedUnitsPerDay")}</strong></span>
+        <span>Estimated non-attributed/day <strong>${impactValue(window, "estimatedNonAttributedUnitsPerDay")}</strong></span>
+        <span>Spend/day <strong>${impactValue(window, "spendPerDay", "") === "Not available" ? "Not available" : formatMoney(window.spendPerDay)}</strong></span>
+        <span>Impressions/day <strong>${impactValue(window, "impressionsPerDay")}</strong></span>
+      </div>
+    </div>`;
+  return `
+    <section class="card ad-impact-card">
+      <div class="row">
+        <div>
+          <h2 class="section-title">Possible ad impact on total sales</h2>
+          <div class="sub">${summary.salesDates || 0} sales dates through ${escapeHtml(summary.salesDataThrough || "the latest import")} | Ads compared through ${escapeHtml(summary.comparisonDataThrough || summary.adDataThrough || "the latest matching report")} | ${summary.matchedProducts || 0} ASINs matched directly</div>
+        </div>
+        <span class="status-pill review">Evidence, not attribution</span>
+      </div>
+      <div class="sub ad-impact-intro">This checks whether changes in ad exposure line up with total Merch sales, including sales Amazon did not directly attribute to ads. It accounts for account-wide sales movement where possible.</div>
+      ${findings.length ? `<div class="ad-impact-list">${findings.map((item) => {
+        const evidence = item.evidence || {};
+        const correlations = evidence.correlations || {};
+        const strongest = ["impressions", "clicks", "spend"].flatMap((metric) => Object.entries(correlations[metric] || {}).map(([lag, value]) => ({ metric, lag, value }))).sort((a, b) => Number(b.value) - Number(a.value))[0];
+        const intervention = item.strongestEvidence;
+        const alternatives = item.alternativeExplanations?.filter(Boolean) || ["No additional limitations were recorded; treat this as evidence, not proof of causation."];
+        return `
+          <article class="ad-impact-finding">
+            <div class="ad-impact-finding-head">
+              <div><div class="title">${escapeHtml(item.design)}</div><div class="sub">${escapeHtml(item.category)} | ${escapeHtml(item.evidenceType || "Insufficient data")}</div></div>
+              <span class="impact-confidence ${confidenceClass(item.confidence)}">${escapeHtml(item.confidence)}</span>
+            </div>
+            <div class="ad-impact-conclusion">${escapeHtml(item.finding)}</div>
+            <div class="ad-impact-campaign"><strong>Campaign conclusion:</strong> ${escapeHtml(item.campaignConclusion || "Needs controlled test")}</div>
+            ${intervention ? `
+              <div class="ad-impact-evidence"><strong>Strongest evidence:</strong> ${escapeHtml(intervention.change_type || "Campaign change")} on ${escapeHtml(intervention.date || "an unknown date")}${intervention.details ? ` | ${escapeHtml(intervention.details)}` : ""}</div>
+              <div class="impact-windows">
+                ${windowMetrics("7 days before", intervention.before7)}
+                ${windowMetrics("Days 1-7 after", intervention.after7)}
+              </div>
+              <div class="ad-impact-evidence"><strong>Account-wide sales change:</strong> ${intervention.accountChangePercent == null ? "Not available" : `${Number(intervention.accountChangePercent).toFixed(1)}%`} | <strong>Design change:</strong> ${intervention.designChangePercent == null ? "Not available" : `${Number(intervention.designChangePercent).toFixed(1)}%`} | <strong>Account-adjusted non-attributed change:</strong> ${intervention.accountAdjustedNonAttributedUnitsPerDay == null ? "Not available" : `${Number(intervention.accountAdjustedNonAttributedUnitsPerDay).toFixed(2)} units/day`}</div>
+            ` : `<div class="ad-impact-evidence"><strong>Strongest evidence:</strong> ${escapeHtml(item.why)}</div>`}
+            ${item.estimatedIndirectEffect ? `<div class="ad-impact-estimate"><strong>Estimated indirect effect:</strong> ${escapeHtml(item.estimatedIndirectEffect)}</div>` : ""}
+            <div class="ad-impact-stats">
+              <span>${evidence.totalUnits || 0} total units</span>
+              <span>${Number(evidence.attributedUnits || 0).toFixed(1)} attributed units</span>
+              <span>${Number(evidence.estimatedNonAttributedUnits || 0).toFixed(1)} estimated non-attributed</span>
+              <span>${evidence.activeAdDays || 0} active-ad days</span>
+            </div>
+            ${!intervention && strongest ? `<div class="sub">Correlation evidence only: ${escapeHtml(strongest.metric)} ${Number(strongest.lag) === 0 ? "same day" : `${strongest.lag} day(s) later`} (r=${Number(strongest.value).toFixed(2)}).</div>` : ""}
+            ${item.controlledTest ? `<div class="ad-impact-test"><strong>Suggested controlled test:</strong> ${escapeHtml(item.controlledTest)}</div>` : ""}
+            <details class="ad-impact-details"><summary>Limitations and alternative explanations</summary><ul>${alternatives.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul></details>
+          </article>`;
+      }).join("")}</div>` : `<div class="sub">No products have enough matched daily sales and advertised-product history yet. Keep importing daily advertised-product reports to build this evidence.</div>`}
+      <details class="ad-impact-details"><summary>How to read this</summary><ul>${(data.limitations || []).map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul></details>
+    </section>
   `;
 }
 
@@ -1499,17 +1657,26 @@ function renderChangeLogger() {
           const context = [item.campaignName, item.targetName].filter(Boolean).join(" · ");
           const title = item.summary || item.details || item.changeType || "Campaign change";
           const expanded = state.expandedChangeId === id;
+          const editing = state.editingChangeId === id;
+          const campaignNames = [...new Set([item.campaignName, ...campaigns.map((campaign) => campaign.name)].filter(Boolean))];
           return `
             <div class="recent-change-entry">
               <div class="recent-change-row" role="button" tabindex="0" data-change-details-toggle="${escapeHtml(id)}" aria-expanded="${expanded}">
                 <div class="recent-change-heading">
                   <strong>${escapeHtml(title)}</strong>
+                  <button type="button" class="recent-change-edit-button recent-change-edit-inline" data-change-edit="${escapeHtml(id)}" title="Correct this log entry">Edit</button>
                   <span class="recent-change-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span>
                 </div>
                 ${context ? `<span class="recent-change-context">${escapeHtml(context)}</span>` : ""}
                 <span>${escapeHtml(item.loggedAt || item.effectiveAt || "")}</span>
               </div>
               <div class="recent-change-details" data-change-details="${escapeHtml(id)}" ${expanded ? "" : "hidden"}>
+                <div class="recent-change-actions recent-change-actions-top">
+                  <button type="button" class="recent-change-edit-button" data-change-edit="${escapeHtml(id)}" aria-expanded="${editing}" title="Correct this log entry">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+                    <span>Edit this change</span>
+                  </button>
+                </div>
                 ${item.details && item.details !== title ? `<div><b>What changed</b><span>${escapeHtml(item.details)}</span></div>` : ""}
                 ${item.changeType ? `<div><b>Change type</b><span>${escapeHtml(item.changeType)}</span></div>` : ""}
                 ${item.campaignName ? `<div><b>Campaign</b><span>${escapeHtml(item.campaignName)}${item.campaignId ? ` (${escapeHtml(item.campaignId)})` : ""}</span></div>` : ""}
@@ -1518,6 +1685,21 @@ function renderChangeLogger() {
                 ${(item.previousValue || item.newValue) ? `<div><b>Value</b><span>${escapeHtml(item.previousValue || "—")} → ${escapeHtml(item.newValue || "—")}</span></div>` : ""}
                 ${item.effectiveDate ? `<div><b>Effective date</b><span>${escapeHtml(item.effectiveDate)}</span></div>` : ""}
                 ${item.recommendationId ? `<div><b>Related recommendation</b><span>${escapeHtml(item.recommendationId)}</span></div>` : ""}
+                ${editing ? `
+                  <form class="change-edit-form" data-change-edit-form="${escapeHtml(id)}">
+                    <label class="field-label"><span>Correct campaign</span>
+                      <select data-change-edit-campaign aria-label="Correct campaign">
+                        ${campaignNames.map((name) => `<option value="${escapeHtml(name)}" ${name === item.campaignName ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+                      </select>
+                    </label>
+                    <label class="field-label"><span>Date change was made</span><input type="date" data-change-edit-date value="${escapeHtml(item.effectiveDate || "")}"></label>
+                    <label class="field-label"><span>What changed</span><textarea rows="3" data-change-edit-details>${escapeHtml(item.details || "")}</textarea></label>
+                    <div class="change-edit-actions">
+                      <button type="button" class="change-edit-cancel" data-change-edit-cancel>Cancel</button>
+                      <button type="submit" class="change-edit-save">Save correction</button>
+                    </div>
+                  </form>
+                ` : ""}
               </div>
             </div>
           `;
@@ -2327,6 +2509,10 @@ function render({ preserveScroll = true } = {}) {
     state.recommendationDeferredRender = true;
     return;
   }
+  if (state.page === "analytics" && hasSelectedContentText()) {
+    state.analyticsRenderPending = true;
+    return;
+  }
   const [title, kicker] = pageMeta[state.page];
   document.querySelector(".phone").dataset.page = state.page;
   document.querySelector("#page-title").textContent = title;
@@ -2389,6 +2575,7 @@ function render({ preserveScroll = true } = {}) {
         loadAdsData(),
         loadCampaignsData(),
         loadAnalyticsData(),
+        loadAdImpactData(),
         loadDailyAudit(),
         loadChangeOptions(),
         loadRecommendationInteractions(),
@@ -2535,6 +2722,13 @@ function render({ preserveScroll = true } = {}) {
     });
   });
 
+  document.querySelectorAll("[data-analytics-granularity]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.analyticsGranularity = button.dataset.analyticsGranularity || "daily";
+      render({ preserveScroll: true });
+    });
+  });
+
   document.querySelectorAll("[data-ai-suggestion]").forEach((button) => {
     button.addEventListener("click", () => askAssistant(button.dataset.aiSuggestion));
   });
@@ -2643,18 +2837,52 @@ function render({ preserveScroll = true } = {}) {
     const toggleChangeDetails = (event) => {
       if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
+      event.stopPropagation();
       const id = row.dataset.changeDetailsToggle || "";
-      const details = document.querySelector(`[data-change-details="${CSS.escape(id)}"]`);
-      if (!details) return;
-      const expanded = details.hidden;
+      const content = document.querySelector("#app-content");
+      const scrollTop = content?.scrollTop || 0;
+      const expanded = state.expandedChangeId !== id;
       state.expandedChangeId = expanded ? id : "";
-      details.hidden = !expanded;
-      row.setAttribute("aria-expanded", String(expanded));
+      state.editingChangeId = "";
+      render({ preserveScroll: true });
+      const restoreScroll = () => {
+        const currentContent = document.querySelector("#app-content");
+        if (currentContent) currentContent.scrollTop = scrollTop;
+      };
+      restoreScroll();
+      requestAnimationFrame(restoreScroll);
       const chevron = row.querySelector(".recent-change-chevron");
       if (chevron) chevron.textContent = expanded ? "⌃" : "⌄";
     };
     row.addEventListener("click", toggleChangeDetails);
     row.addEventListener("keydown", toggleChangeDetails);
+  });
+
+  document.querySelectorAll("[data-change-edit]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = button.dataset.changeEdit || "";
+      state.expandedChangeId = id;
+      state.editingChangeId = id;
+      state.logError = "";
+      render({ preserveScroll: true });
+    });
+  });
+
+  document.querySelectorAll("[data-change-edit-cancel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editingChangeId = "";
+      state.logError = "";
+      render({ preserveScroll: true });
+    });
+  });
+
+  document.querySelectorAll("[data-change-edit-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveEditedCampaignChange(form.dataset.changeEditForm || "", form);
+    });
   });
 
   document.querySelectorAll("[data-change-page]").forEach((button) => {
@@ -2663,6 +2891,7 @@ function render({ preserveScroll = true } = {}) {
       if (!Number.isInteger(nextPage) || nextPage < 0) return;
       state.changeHistoryPage = nextPage;
       state.expandedChangeId = "";
+      state.editingChangeId = "";
       render({ preserveScroll: true });
       document.querySelector(".recent-changes-card")?.scrollIntoView({ block: "nearest" });
     });
@@ -2782,6 +3011,7 @@ loadRoyaltyTier();
 loadAdsData();
 loadCampaignsData();
 loadAnalyticsData();
+loadAdImpactData();
 loadDailyAudit();
 loadChangeOptions();
 loadRecommendationInteractions();

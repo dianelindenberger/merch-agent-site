@@ -26,6 +26,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "query_search_terms",
         "query_placements",
         "query_recommendations",
+        "query_ad_impact",
         "compare_periods",
     }
 )
@@ -176,6 +177,9 @@ class RestrictedAIToolLayer:
                 "status": {"type": "string", "enum": ["Proposed", "Completed", "Deferred", "Ignored", "Action logged", "Monitoring", "Dismissed", "Superseded", "Resolved", "Expired", "all"]},
                 "limit": _limit_property(),
             }),
+            _schema("query_ad_impact", "Get conservative product-level evidence on whether advertising may have influenced total Merch sales beyond Amazon-attributed orders.", {
+                "limit": _limit_property(),
+            }),
             _schema("compare_periods", "Compare the same bounded metric set across two supported periods.", {
                 "entity": {"type": "string", "enum": ["sales", "designs", "campaigns"]},
                 "period_a": _period_property(),
@@ -274,6 +278,9 @@ class RestrictedAIToolLayer:
             if status not in {"Proposed", "Completed", "Deferred", "Ignored", "Action logged", "Monitoring", "Dismissed", "Superseded", "Resolved", "Expired", "all"}:
                 raise ToolValidationError("Invalid recommendation status.")
             return {"period": _period(args.get("period")), "status": status, "limit": _limit(args.get("limit"))}
+        if name == "query_ad_impact":
+            _reject_unknown(args, {"limit"})
+            return {"limit": _limit(args.get("limit"))}
         if name == "compare_periods":
             _reject_unknown(args, {"entity", "period_a", "period_b", "search", "market", "limit"})
             entity = _text(args.get("entity"), "entity", required=True, maximum=20)

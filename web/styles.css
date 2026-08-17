@@ -1229,24 +1229,54 @@ svg {
 }
 
 .analytics-chart-card {
-  padding: 12px;
-  background: #fffaf0;
-  border-color: #ebddb7;
+  padding: 14px 16px 16px;
+  background: #ffffff;
+  border-color: #e3e9ef;
 }
+
+.phone[data-page="analytics"] .content {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.ad-impact-card { display: grid; gap: 12px; border-top: 3px solid var(--teal); }
+.ad-impact-intro { line-height: 1.45; }
+.ad-impact-list { display: grid; gap: 10px; }
+.ad-impact-finding { display: grid; gap: 8px; padding: 12px; border: 1px solid #cfe6dc; border-left: 4px solid var(--teal); border-radius: 12px; background: #f4fbf8; }
+.ad-impact-finding-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.ad-impact-conclusion { font-size: 14px; font-weight: 760; line-height: 1.35; }
+.ad-impact-evidence, .ad-impact-estimate { font-size: 12px; line-height: 1.45; }
+.ad-impact-campaign, .ad-impact-test { padding: 8px; border-radius: 8px; background: #fffaf0; color: #745c28; font-size: 12px; line-height: 1.45; }
+.ad-impact-estimate { padding: 8px; border-radius: 8px; background: #e9f8f4; color: #176a61; }
+.impact-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.impact-window { padding: 9px; border: 1px solid #d9e7ea; border-radius: 9px; background: #fff; }
+.impact-window-grid { display: grid; gap: 4px; margin-top: 5px; color: #66777f; font-size: 10px; line-height: 1.35; }
+.impact-window-grid span { display: flex; justify-content: space-between; gap: 6px; }
+.impact-window-grid strong { color: var(--ink); text-align: right; }
+.ad-impact-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.ad-impact-stats span { padding: 4px 7px; border-radius: 999px; background: #fff; border: 1px solid #d8ebe3; color: #52706d; font-size: 10px; font-weight: 760; }
+.impact-confidence { flex: 0 0 auto; padding: 4px 7px; border-radius: 999px; font-size: 10px; font-weight: 900; }
+.impact-confidence.high { background: #dff4e4; color: #28743c; }
+.impact-confidence.medium { background: #fff3d7; color: #91620b; }
+.impact-confidence.low { background: #eaf0f4; color: #5c6973; }
+.ad-impact-details { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.ad-impact-details summary { cursor: pointer; font-weight: 750; color: #58706f; }
+.ad-impact-details ul { margin: 7px 0 0; padding-left: 17px; }
+@media (max-width: 420px) { .impact-windows { grid-template-columns: 1fr; } }
 
 .combo-chart {
   width: 100%;
   height: auto;
-  aspect-ratio: 360 / 212;
+  aspect-ratio: 640 / 270;
   display: block;
   pointer-events: none;
 }
 
 .chart-with-axes {
   display: grid;
-  grid-template-columns: 42px minmax(0, 820px) 58px;
+  grid-template-columns: 40px minmax(0, 1fr) 58px;
   align-items: stretch;
-  max-width: 940px;
+  max-width: 1040px;
   margin: 8px auto 0;
 }
 
@@ -1254,42 +1284,34 @@ svg {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 20px 5px 31px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
+  padding: 22px 6px 22px;
+  color: #77818a;
+  font-size: 12px;
+  font-weight: 650;
   line-height: 1;
 }
 
 .left-axis { text-align: right; }
 .right-axis { text-align: left; }
 
-.chart-tick-label {
-  fill: var(--muted);
-  font-family: inherit;
-  font-size: 8px;
-  font-weight: 700;
-}
-
-@media (max-width: 520px) {
-  .chart-with-axes { grid-template-columns: 35px minmax(0, 1fr) 49px; }
-  .chart-y-axis { padding-left: 2px; padding-right: 2px; font-size: 10px; }
-}
-
 .chart-scale-labels {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin: 12px 4px 0;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
+  max-width: 1040px;
+  margin: 10px auto 0;
+  padding: 0 58px 0 40px;
+  color: #7e8790;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .chart-axis-labels {
   display: grid;
   gap: 4px;
-  margin: 2px 2px 0;
+  max-width: 1040px;
+  margin: 5px auto 0;
+  padding: 0 58px 0 40px;
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
@@ -1310,7 +1332,9 @@ svg {
   align-items: center;
   color: var(--muted);
   font-size: 12px;
-  margin-top: 8px;
+  max-width: 1040px;
+  margin: 10px auto 0;
+  padding: 0 58px 0 40px;
 }
 
 .legend-dot {
@@ -1327,6 +1351,13 @@ svg {
 
 .legend-royalties {
   background: #e9788f;
+}
+
+@media (max-width: 720px) {
+  .combo-chart { height: auto; aspect-ratio: 640 / 270; }
+  .chart-with-axes { grid-template-columns: 32px minmax(0, 1fr) 46px; }
+  .chart-y-axis { padding-left: 2px; padding-right: 2px; font-size: 10px; }
+  .chart-scale-labels, .chart-axis-labels, .chart-legend { padding-left: 32px; padding-right: 46px; }
 }
 
 .line-chart {
@@ -1667,6 +1698,88 @@ svg {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .04em;
+}
+
+.recent-change-actions {
+  display: flex !important;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.recent-change-actions-top {
+  justify-content: flex-start;
+  padding: 2px 0 6px;
+}
+
+.recent-change-edit-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--brand);
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.recent-change-edit-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.recent-change-edit-inline {
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+.change-edit-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--brand) 24%, var(--line));
+  border-radius: 8px;
+  background: #fff;
+}
+
+.change-edit-form .field-label textarea {
+  min-height: 76px;
+}
+
+.change-edit-actions {
+  display: grid !important;
+  grid-template-columns: 1fr 1.35fr;
+  gap: 9px;
+}
+
+.change-edit-actions button {
+  min-height: 42px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.change-edit-cancel {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.change-edit-save {
+  border: 0;
+  background: var(--brand);
+  color: #fff;
 }
 
 .change-history-pagination {

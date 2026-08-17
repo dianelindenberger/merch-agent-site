@@ -38,6 +38,7 @@ if str(SRC_DIR) not in sys.path:
 from report_utils import file_hash, normalize_columns, read_report  # noqa: E402
 from daily_audit import build_daily_audit  # noqa: E402
 from database import DATA_DIR, DB_PATH, setup_database  # noqa: E402
+from incrementality_analysis import analyze_incrementality  # noqa: E402
 from reporting_day import amazon_reporting_date  # noqa: E402
 from ai_assistant import (  # noqa: E402
     AssistantConfig,
@@ -1799,6 +1800,14 @@ def analytics_payload(period, custom_start="", custom_end=""):
     }
 
 
+def ad_impact_payload(limit=20):
+    """Expose conservative, cross-referenced total-sales impact findings."""
+    payload = analyze_incrementality(limit=limit)
+    payload["source"] = "sqlite"
+    payload["generatedAt"] = datetime.now(EASTERN_TIME).isoformat(timespec="seconds")
+    return payload
+
+
 def weekly_business_briefing():
     analytics = analytics_payload("30D")
     points = analytics.get("points", [])
@@ -2342,12 +2351,41 @@ def designs_payload(period, market=None, search=""):
     }
 
 
+def campaign_state_lookup(cur):
+    """Return the newest current Amazon state by normalized campaign name."""
+    try:
+        rows = cur.execute(
+            """
+            SELECT campaign_name, state, status, synced_at
+            FROM campaign_states
+            ORDER BY synced_at DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    states = {}
+    for row in rows:
+        key = str(row["campaign_name"] or "").strip().lower()
+        if not key:
+            continue
+        item = {
+            "amazonState": str(row["state"] or "").upper(),
+            "amazonStatus": str(row["status"] or ""),
+            "stateSyncedAt": str(row["synced_at"] or ""),
+        }
+        current = states.get(key)
+        if current is None or item["amazonState"] == "ENABLED":
+            states[key] = item
+    return states
+
+
 def campaigns_payload(period="last30", search=""):
     if not DB_PATH.exists():
         return {"source": "missing_database", "period": period, "campaigns": []}
 
     conn = connect()
     cur = conn.cursor()
+    current_states = campaign_state_lookup(cur)
     search_text = search.strip().lower()
     latest_import = latest_table_import(cur, "campaigns", period)
 
@@ -2424,6 +2462,7 @@ def campaigns_payload(period="last30", search=""):
             "reportDate": row["report_date"],
             "status": "performing" if orders and sales / max(spend, 0.01) >= 5 else "review" if spend >= 10 and not orders else "watch",
         }
+        item.update(current_states.get(str(item["name"]).strip().lower(), {}))
         product_groups = advertised_product_campaign_groups(cur, item["name"], period)
         if product_groups:
             item["impressions"] = sum(group["impressions"] for group in product_groups)
@@ -2699,6 +2738,7 @@ def campaign_catalog():
         return []
 
     conn = connect()
+    states = campaign_state_lookup(conn.cursor())
     rows = conn.execute(
         """
         SELECT
@@ -2719,6 +2759,7 @@ def campaign_catalog():
             "country": row["country"],
             "reportDate": row["report_date"],
             "latestImport": row["latest_import"],
+            **states.get(str(row["campaign_name"] or "").strip().lower(), {}),
         }
         for row in rows
     ]
@@ -2952,6 +2993,87 @@ def save_campaign_change(payload):
         "effectiveDate": str(payload.get("effectiveDate", "")).strip(),
         "summary": summary,
         "loggedAt": logged_at,
+    }
+
+
+def update_campaign_change(payload):
+    """Correct a user-owned change-log entry without creating another entry."""
+    try:
+        change_id = int(payload.get("id", 0))
+    except (TypeError, ValueError):
+        change_id = 0
+    campaign_name = str(payload.get("campaignName", "")).strip()
+    details = str(payload.get("details", "")).strip()
+    effective_date = str(payload.get("effectiveDate", "")).strip()
+
+    if change_id <= 0:
+        return {"ok": False, "error": "That change-log entry could not be found."}
+    if not campaign_name or not details:
+        return {"ok": False, "error": "Campaign name and change details are required."}
+    try:
+        date.fromisoformat(effective_date)
+    except ValueError:
+        return {"ok": False, "error": "Select the date when the change was made."}
+
+    known_campaigns = campaign_catalog()
+    matched_campaign = next((item for item in known_campaigns if item["name"].lower() == campaign_name.lower()), None)
+    if not matched_campaign:
+        return {"ok": False, "error": "That campaign was not found in the latest campaign data."}
+
+    contextual_details = f"{details} in {matched_campaign['name']} on {short_log_date(effective_date)}"
+    corrected = detect_campaign_change(contextual_details, known_campaigns) or {}
+    if corrected.get("needsCampaign"):
+        corrected = {}
+    corrected.update({
+        "campaignName": matched_campaign["name"],
+        "details": details,
+        "effectiveDate": effective_date,
+    })
+    corrected.setdefault("changeType", "Campaign note")
+    corrected.setdefault("targetName", "")
+    corrected.setdefault("previousValue", "")
+    corrected.setdefault("newValue", "")
+    corrected.setdefault("changeCategory", "campaign")
+    summary = describe_campaign_change(corrected)
+
+    conn = connect()
+    cur = conn.cursor()
+    ensure_campaign_change_schema(cur)
+    existing = cur.execute("SELECT id FROM campaign_change_log WHERE id = ?", (change_id,)).fetchone()
+    if not existing:
+        conn.close()
+        return {"ok": False, "error": "That change-log entry no longer exists."}
+
+    # IDs captured from the formerly selected campaign are no longer reliable.
+    cur.execute(
+        """
+        UPDATE campaign_change_log
+        SET campaign_name = ?, target_name = ?, change_type = ?, details = ?,
+            previous_value = ?, new_value = ?, effective_date = ?, summary = ?,
+            change_category = ?, campaign_id = NULL, ad_group_id = NULL,
+            target_id = NULL, recommendation_id = NULL
+        WHERE id = ?
+        """,
+        (
+            matched_campaign["name"],
+            str(corrected.get("targetName", "")).strip(),
+            str(corrected.get("changeType", "Campaign note")).strip(),
+            details,
+            str(corrected.get("previousValue", "")).strip(),
+            str(corrected.get("newValue", "")).strip(),
+            effective_date,
+            summary,
+            str(corrected.get("changeCategory", "campaign")).strip(),
+            change_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "ok": True,
+        "id": change_id,
+        "campaignName": matched_campaign["name"],
+        "summary": summary,
     }
 
 
@@ -4098,6 +4220,14 @@ def build_ai_tool_layer():
             "decisionHistory": history[:limit],
         }
 
+    def query_ad_impact(limit=20):
+        payload = ad_impact_payload(limit=limit)
+        return {
+            "summary": payload.get("summary", {}),
+            "limitations": payload.get("limitations", []),
+            "findings": payload.get("findings", []),
+        }
+
     def compare_periods(entity, period_a, period_b, search="", market="", limit=20):
         if entity == "sales":
             first = query_sales(period_a, market, limit)
@@ -4132,6 +4262,7 @@ def build_ai_tool_layer():
         "query_search_terms": ai_search_terms_provider,
         "query_placements": ai_placements_provider,
         "query_recommendations": query_recommendations,
+        "query_ad_impact": query_ad_impact,
         "compare_periods": compare_periods,
         "record_user_action": lambda _context, **kwargs: prepare_write("record_user_action", _context, **kwargs),
         "defer_recommendation": lambda _context, **kwargs: prepare_write("defer_recommendation", _context, **kwargs),
@@ -4330,6 +4461,15 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             ))
             return
 
+        if parsed.path == "/api/ad-impact":
+            query = parse_qs(parsed.query)
+            try:
+                limit = max(1, min(50, int(query.get("limit", ["20"])[0])))
+            except ValueError:
+                limit = 20
+            self.send_json(ad_impact_payload(limit=limit))
+            return
+
         if parsed.path == "/api/designs":
             query = parse_qs(parsed.query)
             period = query.get("period", ["last30"])[0]
@@ -4379,7 +4519,7 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        allowed_paths = {"/api/assistant", "/api/ai-settings", "/api/campaign-change", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales", "/api/imports/merch-sales-status", "/api/recommendation-interaction"}
+        allowed_paths = {"/api/assistant", "/api/ai-settings", "/api/campaign-change", "/api/campaign-change-edit", "/api/change-preview", "/api/refresh-ads-now", "/api/sales-sync", "/api/sales-upload", "/api/imports/merch-sales", "/api/imports/merch-sales-status", "/api/recommendation-interaction"}
         if parsed.path not in allowed_paths:
             self.send_json({"error": "Not found"}, 404)
             return
@@ -4414,6 +4554,9 @@ class MerchAgentHandler(SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
             if parsed.path == "/api/campaign-change":
                 result = save_campaign_change(payload)
+                self.send_json(result, 200 if result.get("ok") else 400)
+            elif parsed.path == "/api/campaign-change-edit":
+                result = update_campaign_change(payload)
                 self.send_json(result, 200 if result.get("ok") else 400)
             elif parsed.path == "/api/change-preview":
                 result = preview_campaign_change(payload)
